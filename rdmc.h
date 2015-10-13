@@ -23,6 +23,7 @@ namespace rdmc{
 
     void send(uint16_t group_number, char* buffer, size_t size);
     void small_send(uint16_t group_number, char* buffer, uint16_t size);
+    void post_receive_buffer(uint16_t group_number, char* buffer, size_t size);
 
     void barrier();
     void shutdown();

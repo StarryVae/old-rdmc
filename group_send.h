@@ -34,7 +34,8 @@ protected:
     
     uint8_t message_number = 0;
     char* buffer = nullptr;
-    size_t size;
+    size_t buffer_size = 0;
+    size_t message_size;
     size_t num_blocks;
 
     size_t outgoing_block;
@@ -72,6 +73,7 @@ public:
     void complete_chunk_send();
     void send_message(char* data, size_t size);
     void small_send(char* data, uint16_t size);
+    void post_buffer(char* data, size_t size);
     void init();
 
 private:

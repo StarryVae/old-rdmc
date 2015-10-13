@@ -8,9 +8,6 @@
 using namespace std;
 using namespace rdmc;
 
-static const size_t buffer_size = 256<<20;
-
-
 group::group(uint16_t _group_number, size_t _block_size,
              vector<uint16_t> _members, completion_callback_t callback,
              completion_callback_t ss_callback):
@@ -25,10 +22,10 @@ group::group(uint16_t _group_number, size_t _block_size,
     small_send_callback(ss_callback){
 
     if(member_index != 0){
-        buffer = (char*)mmap(NULL, buffer_size, PROT_READ|PROT_WRITE, 
-                             MAP_ANON|MAP_PRIVATE, -1, 0);
-        memset(buffer, 1, buffer_size);
-        memset(buffer, 0, buffer_size);
+        // buffer = (char*)mmap(NULL, buffer_size, PROT_READ|PROT_WRITE, 
+        //                      MAP_ANON|MAP_PRIVATE, -1, 0);
+        // memset(buffer, 1, buffer_size);
+        // memset(buffer, 0, buffer_size);
 
         first_block_buffer = (char*)mmap(NULL, block_size, PROT_READ|PROT_WRITE, 
                                          MAP_ANON|MAP_PRIVATE, -1, 0);
@@ -37,9 +34,9 @@ group::group(uint16_t _group_number, size_t _block_size,
     }
 }
 group::~group(){
-    munmap(buffer, buffer_size);
+    // munmap(buffer, buffer_size);
     munmap(first_block_buffer, block_size);
-    // TODO: Destroy group and free all used resources.
+    // TODO: free all other used resources.
 }
 void group::receive_chunk(tag_t tag){
     size_t block_number = tag.index() / chunks_per_block;
@@ -55,7 +52,8 @@ void group::receive_chunk(tag_t tag){
                       "received_first_block");
             
             num_blocks = (tag.message_size() - 1) / chunks_per_block + 1;
-            size = tag.message_size() * block_size / chunks_per_block;
+            message_size = tag.message_size() * block_size / chunks_per_block;
+            assert(message_size <= buffer_size);
 
             first_block_number = min(get_first_block(member_index), num_blocks-1);
 
@@ -103,7 +101,7 @@ void group::receive_chunk(tag_t tag){
         uint16_t chunks_in_block = chunks_per_block;
 
         if(block_number == num_blocks - 1){
-            size_t total_chunks = (size - 1) / chunk_size + 1;
+            size_t total_chunks = (message_size - 1) / chunk_size + 1;
             chunks_in_block = (total_chunks - 1) % chunks_per_block + 1;
         }
 
@@ -162,11 +160,10 @@ void group::send_message(char* data, size_t data_size){
     assert(data_size > 0);
     assert(member_index == 0);
     assert(receive_step == 0); // Queueing sends is not supported.
-    assert(data_size <= (1<<30));
 
     buffer = data;
-    size = data_size;
-    num_blocks = (size - 1) / block_size + 1;
+    buffer_size = message_size = data_size;
+    num_blocks = (message_size - 1) / block_size + 1;
 
     LOG_EVENT(group_number, message_number, -1, "send_message");
 
@@ -179,7 +176,7 @@ void group::small_send(char* data, uint16_t data_size){
 
     uint64_t tag = (uint64_t)tag_t::type::SMALL_SEND
         | ((uint64_t)group_number << 40)
-        | ((uint64_t)size);
+        | ((uint64_t)data_size);
 
     psm_mq_req_t req;
     for(uint16_t target : members){
@@ -187,14 +184,22 @@ void group::small_send(char* data, uint16_t data_size){
             continue;
 
         request_context* context = new request_context;
-        context->data = buffer;
+        context->data = data;
         context->tag = tag_t(tag);
         context->is_send = true;
 
         psm_mq_isend(mq, epaddrs[members[target]], PSM_MQ_FLAG_SENDSYNC,
-                     tag, context->data, size, context, &req);
+                     tag, context->data, data_size, context, &req);
     }
     LOG_EVENT(group_number, -1,-1, "initiated_small_send");
+}
+void group::post_buffer(char* buf, size_t buf_size){
+    assert(buf_size > 0);
+    assert(member_index > 0);
+    assert(receive_step == 0); // Queueing receives is not supported.
+
+    buffer = buf;
+    buffer_size = buf_size;
 }
 void group::init(){
     if(member_index > 0)
@@ -231,7 +236,8 @@ void group::send_next_block(){
     for(unsigned int chunk = 0; chunk < chunks_per_block; chunk++){
         char* ptr = buffer + block_number * block_size 
             + chunk * chunk_size;
-        size_t nbytes = min(chunk_size, (size_t)(buffer + size - ptr));
+        size_t nbytes = min(chunk_size, 
+                            (size_t)(buffer + message_size - ptr));
 
         if(first_block_number && block_number == *first_block_number)
             ptr = first_block_buffer;
@@ -248,7 +254,7 @@ void group::send_next_block(){
             | ((uint64_t)group_number << 40)
             | ((uint64_t)message_number << 32)
             | ((uint64_t)(forged_block_number * chunks_per_block + chunk) << 16)
-            | ((uint64_t)((size - 1) / chunk_size + 1));
+            | ((uint64_t)((message_size - 1) / chunk_size + 1));
 
         request_context* context = new request_context;
         context->data = ptr;
@@ -261,7 +267,6 @@ void group::send_next_block(){
     outgoing_block = block_number;
     LOG_EVENT(group_number, message_number, block_number, "started_sending_block");
 }
-            
 void group::complete_message(){
     // remap first_block into buffer
     if(member_index > 0 && first_block_number){
@@ -317,7 +322,7 @@ void group::post_recv(size_t block_number){
 
     for(int chunk = 0; chunk < chunks_per_block; chunk++){
         char* ptr = buffer + block_size * block_number + chunk_size * chunk;
-        size_t nbytes = min(chunk_size, (size_t)(buffer + size - ptr));
+        size_t nbytes = min(chunk_size, (size_t)(buffer + message_size - ptr));
 
         if(nbytes == 0)
             break;

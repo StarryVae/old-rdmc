@@ -436,6 +436,18 @@ namespace rdmc{
         queued_operations_cv.notify_all();
         LOG_EVENT(group_number, -1, -1, "queued_small_send");
     }
+    void post_receive_buffer(uint16_t group_number, char* buffer, size_t size){
+        std::unique_lock<std::mutex> lock(queued_operations_lock);
+        queued_operations.emplace([group_number, buffer, size]() {
+            auto it = groups.find(group_number);
+            assert(it != groups.end());
+            it->second->post_buffer(buffer, size);
+            LOG_EVENT(group_number, -1, -1, "buffer_posted");
+        });
+        queued_operation_flag = true;
+        queued_operations_cv.notify_all();
+        LOG_EVENT(group_number, -1, -1, "queued_post_receive_buffer");
+    }
     void barrier(){
         std::mutex m;
         std::condition_variable cv;

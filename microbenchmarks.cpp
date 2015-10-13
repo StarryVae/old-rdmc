@@ -460,19 +460,24 @@ void bandwidth_test(){
 }
 void memcpy_test(){
     const size_t size = 1 << 30;
-    char* buf1 = new char[size];
-    char* buf2 = new char[size];
+    char* buf1 = (char*)malloc(size+1024);
+    char* buf2 = (char*)malloc(size+1024);
 
-    for(size_t i = 0; i < size; i++){
+    for(size_t i = 0; i < size+1024; i++){
         buf1[i] = (i*i - i) % 256;
+//        buf2[i] = 0; 
     }
 
     uint64_t t = get_time();
 
-    memcpy(buf2, buf1, size);
+    for(size_t i = 0; i < size; i++)
+        buf2[i] = 0;//buf1[i+1024];
+//    memcpy(buf2, buf1, size);
 
     uint64_t diff = get_time() - t;
-
+    free(buf1);
+    free(buf2);
+    
     printf("Memcpy bandwidth: %f Gb/s\n", 8.0 * size / diff);
     fflush(stdout);
 }

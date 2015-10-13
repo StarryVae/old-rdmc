@@ -97,8 +97,14 @@ send_stats measure_multicast(size_t size, size_t block_size,
         return send_stats();
     }
     else if(node_rank > 0){
+        auto buffer = (char*)mmap(NULL, size, PROT_READ|PROT_WRITE, 
+                                  MAP_ANON|MAP_PRIVATE, -1, 0);
+        memset(buffer, 1, size);
+        memset(buffer, 0, size);
+
         for(size_t i = 0; i < iterations; i++){
             send_completion_time = 0;
+            rdmc::post_receive_buffer(group_number, buffer, size);
             rdmc::barrier();
 
             LOG_EVENT(-1,-1,-1, "start_send_timer");
@@ -107,7 +113,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
             unique_lock<mutex> lk(send_mutex);
             send_done_cv.wait(lk, [&]{return send_completion_time != 0;});
 
-            uint64_t t1 = get_time();
+            // uint64_t t1 = get_time();
             rdmc::barrier();
             uint64_t t2 = get_time();
             rdmc::barrier();
@@ -163,7 +169,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
             send_done_cv.wait(lk, [&]{return send_completion_time != 0;});
             LOG_EVENT(-1,-1,-1, "completion_reported");
 
-            uint64_t t1 = get_time();
+            // uint64_t t1 = get_time();
             rdmc::barrier();
             uint64_t t2 = get_time();
             rdmc::barrier();
@@ -456,7 +462,7 @@ void small_send_latency_group_size(){
 }
 void large_send(){
     LOG_EVENT(-1, -1, -1, "start_large_send");
-    auto s = measure_multicast(256<<20, 8<<20, num_nodes, 1);
+    auto s = measure_multicast(32<<20, 8<<20, num_nodes, 1);
     printf("Bandwidth = %f(%f) Gb/s\n", s.bandwidth.mean, s.bandwidth.stddev);
     printf("Latency = %f(%f) ms\n", s.time.mean, s.time.stddev);
     // uint64_t eTime = get_time();
@@ -470,10 +476,6 @@ void small_send(){
     fflush(stdout);
 }
 int main(int argc, char* argv[]){
-    for(int i = 0; i < 16; i++)
-        memcpy_test();
-    return 0;
-
     if(argc <= 1){
         puts("Must specify which experiment to run");
         return -1;
@@ -482,16 +484,6 @@ int main(int argc, char* argv[]){
     // rlim.rlim_cur = RLIM_INFINITY;
     // rlim.rlim_max = RLIM_INFINITY;
     // setrlimit(RLIMIT_CORE, &rlim);
-
-    // char* receive_buffer = new char[8ull << 30];
-    //     (char*)mmap(NULL,256<<20,PROT_READ|PROT_WRITE, 
-    //                 MAP_ANON|MAP_PRIVATE, -1, 0);
-
-    // char* buffer2 = (char*)mmap(NULL,256<<20,PROT_READ|PROT_WRITE,
-    //                             MAP_ANON|MAP_PRIVATE, -1, 0);
-
-    // memset(receive_buffer, 'a', 8ull << 30);
-    // memset(receive_buffer, 'b', 8ull << 30);
 
     LOG_EVENT(-1,-1,-1, "calling_init");
     rdmc::initialize();
