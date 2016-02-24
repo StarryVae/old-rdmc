@@ -2,4 +2,5 @@ verbs-mcast
 Makefile
 CMakeCache.txt
 cmake_install.cmake
+librdmc.a
 CMakeFiles/*
