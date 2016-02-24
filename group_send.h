@@ -5,121 +5,179 @@
 #include "util.h"
 #include "rdmc.h"
 #include "message.h"
-#include "psm_helper.h"
+#include "verbs_helper.h"
 
 #include <boost/optional.hpp>
 #include <queue>
 #include <vector>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <set>
 
 using boost::optional;
 using std::vector;
+using std::map;
 using std::unique_ptr;
+using rdmc::incoming_message_callback_t;
 using rdmc::completion_callback_t;
 
 class group {
-protected:
-    const uint16_t group_number;
-    const size_t block_size;
-    const uint16_t chunks_per_block;
-    const vector<uint16_t> members;  // first element is the sender
-    const uint16_t member_index;     // our index in the members list
-    const size_t chunk_size;         // derived from block_size and
-                                     // chunks_per_block.
+private:
+	const vector<uint32_t> members;  // first element is the sender
 
+    // Set of receivers who are ready to receive the next block from us.
+    std::set<uint32_t> receivers_ready;
+
+    std::mutex monitor;
+
+    unique_ptr<memory_region> first_block_mr;
     optional<size_t> first_block_number;
-    uint16_t first_block_chunks = 0;
-    psm_mq_req_t first_block_request;
-    char* first_block_buffer;
-    
-    uint8_t message_number = 0;
-    char* buffer = nullptr;
-    size_t buffer_size = 0;
+    unique_ptr<char[]> first_block_buffer;
+
+    std::shared_ptr<memory_region> mr;
+    size_t mr_offset;
     size_t message_size;
-    size_t num_blocks;
+    size_t incoming_block;
+    size_t message_number = 0;
 
     size_t outgoing_block;
-    bool sending = false;   // Whether a block send is in progress
-    size_t send_step = 0;   // Number of blocks sent/stalls so far
-    size_t chunks_left = 0; // How many chunks of the current block
-                            // being sent have yet to complete.
+    bool sending = false;    // Whether a block send is in progress
+    size_t send_step = 0;    // Number of blocks sent/stalls so far
 
     // Total number of blocks received and the number of chunks
     // received for ecah block, respectively.
     size_t num_received_blocks = 0;
     size_t receive_step = 0;
-    vector<uint16_t> received_chunks;
+    vector<bool> received_blocks;
 
-    struct block_transfer{
-        uint16_t target;
+    completion_callback_t completion_callback;
+    incoming_message_callback_t incoming_message_upcall;
+
+protected:
+    const uint16_t group_number;
+    const size_t block_size;
+	const uint32_t num_members;
+    const uint32_t member_index;     // our index in the members list
+    size_t num_blocks;
+	
+    // maps from member_indices to the queue pairs
+    map<size_t, queue_pair> queue_pairs;
+    map<size_t, queue_pair> rfb_queue_pairs;
+
+    struct block_transfer {
+        uint32_t target;
         size_t block_number;
-        size_t forged_block_number;
     };
 
-    virtual optional<block_transfer> get_outgoing_transfer(size_t send_step)=0;
-    virtual optional<block_transfer> get_incoming_transfer(size_t receive_step)=0;
-    virtual size_t get_total_steps()=0;
-    virtual size_t get_first_block(uint16_t receiver)=0;
+    virtual optional<block_transfer> get_outgoing_transfer(
+        size_t send_step) const = 0;
+    virtual optional<block_transfer> get_incoming_transfer(
+        size_t receive_step) const = 0;
+    virtual optional<block_transfer> get_first_block() const = 0;
+    virtual size_t get_total_steps() const = 0;
+    virtual void form_connections() = 0;
+    void connect(size_t neighbor);
 
 public:
-    completion_callback_t completion_callback;
-    completion_callback_t small_send_callback;
-
-    group(uint16_t group_number, size_t block_size, vector<uint16_t> members,
-          completion_callback_t callback, completion_callback_t ss_callback);
+    group(uint16_t group_number, size_t block_size, vector<uint32_t> members,
+          incoming_message_callback_t upcall, completion_callback_t callback);
     ~group();
+
+    void receive_block(uint32_t send_imm);
+    void receive_ready_for_block(uint32_t step, uint32_t sender);
+    void complete_block_send();
     
-    void receive_chunk(tag_t tag);
-    void complete_chunk_send();
-    void send_message(char* data, size_t size);
-    void small_send(char* data, uint16_t size);
-    void post_buffer(char* data, size_t size);
+    void send_message(std::shared_ptr<memory_region> message_mr, size_t offset,
+                      size_t length);
+
+    // This function is necessary because we can't issue a virtual function call
+    // from a constructor, but we need to perform them in order to know which
+    // queue pair to post the first_block_buffer on, and which nodes we must
+    // connect to.
     void init();
 
 private:
-    void post_recv(size_t block_number);
-    void post_first_block();
+    void post_recv(block_transfer transfer);
     void send_next_block();
     void complete_message();
     void prepare_for_next_message();
+    void send_ready_for_block(uint32_t neighbor);
 };
-class chain_group: public group{
+class chain_group : public group {
 public:
     using group::group;
 
-    optional<block_transfer> get_outgoing_transfer(size_t send_step);
-    optional<block_transfer> get_incoming_transfer(size_t receive_step);
-    size_t get_total_steps();
-    size_t get_first_block(uint16_t receiver);
+protected:
+    void form_connections();
+    optional<block_transfer> get_outgoing_transfer(size_t send_step) const;
+    optional<block_transfer> get_incoming_transfer(size_t receive_step) const;
+    optional<block_transfer> get_first_block() const;
+    size_t get_total_steps() const;
 };
-class sequential_group: public group{
+class sequential_group : public group {
 public:
     using group::group;
 
-    optional<block_transfer> get_outgoing_transfer(size_t send_step);
-    optional<block_transfer> get_incoming_transfer(size_t receive_step);
-    size_t get_total_steps();
-    size_t get_first_block(uint16_t receiver);
+protected:
+    void form_connections();
+    optional<block_transfer> get_outgoing_transfer(size_t send_step) const;
+    optional<block_transfer> get_incoming_transfer(size_t receive_step) const;
+    optional<block_transfer> get_first_block() const;
+    size_t get_total_steps() const;
 };
-class tree_group: public group{
+class tree_group : public group {
 public:
     using group::group;
 
-    optional<block_transfer> get_outgoing_transfer(size_t send_step);
-    optional<block_transfer> get_incoming_transfer(size_t receive_step);
-    size_t get_total_steps();
-    size_t get_first_block(uint16_t receiver);
+protected:
+    void form_connections();
+    optional<block_transfer> get_outgoing_transfer(size_t send_step) const;
+    optional<block_transfer> get_incoming_transfer(size_t receive_step) const;
+    optional<block_transfer> get_first_block() const;
+    size_t get_total_steps() const;
 };
-class binomial_group: public group {
+class binomial_group : public group {
 private:
-    optional<block_transfer> get_outgoing_transfer(uint16_t sender, size_t send_step);
-public:
-    using group::group;
+    // Base to logarithm of the group size, rounded down.
+    unsigned int log2_num_members;
 
-    optional<block_transfer> get_outgoing_transfer(size_t send_step);
-    optional<block_transfer> get_incoming_transfer(size_t receive_step);
-    size_t get_total_steps();
-    size_t get_first_block(uint16_t receiver);
+    optional<block_transfer> get_vertex_outgoing_transfer(size_t send_step);
+    optional<block_transfer> get_vertex_incoming_transfer(size_t receive_step);
+
+public:
+    static optional<block_transfer> get_vertex_outgoing_transfer(
+        uint32_t vertex, size_t step, uint32_t num_members,
+        unsigned int log2_num_members, size_t num_blocks, size_t total_steps);
+    static optional<block_transfer> get_vertex_incoming_transfer(
+        uint32_t vertex, size_t step, uint32_t num_members,
+        unsigned int log2_num_members, size_t num_blocks, size_t total_steps);
+    static optional<block_transfer> get_outgoing_transfer(
+        uint32_t node, size_t step, uint32_t num_members,
+        unsigned int log2_num_members, size_t num_blocks, size_t total_steps);
+    static optional<block_transfer> get_incoming_transfer(
+        uint32_t node, size_t step, uint32_t num_members,
+        unsigned int log2_num_members, size_t num_blocks, size_t total_steps);
+    static optional<size_t> get_intravertex_block(uint32_t vertex, size_t step,
+                                                  uint32_t num_members,
+                                                  unsigned int log2_num_members,
+                                                  size_t num_blocks,
+                                                  size_t total_steps);
+    static uint32_t get_intervertex_receiver(uint32_t vertex, size_t step,
+                                             uint32_t num_members,
+                                             unsigned int log2_num_members,
+                                             size_t num_blocks,
+                                             size_t total_steps);
+    binomial_group(uint16_t group_number, size_t block_size,
+                   vector<uint32_t> members, incoming_message_callback_t upcall,
+                   completion_callback_t callback);
+
+protected:
+    void form_connections();
+    optional<block_transfer> get_outgoing_transfer(size_t send_step) const;
+    optional<block_transfer> get_incoming_transfer(size_t receive_step) const;
+    optional<block_transfer> get_first_block() const;
+    size_t get_total_steps() const;
 };
 
 #endif /* GROUP_SEND_H */

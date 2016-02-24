@@ -3,542 +3,884 @@
 
 #include <cassert>
 #include <climits>
+#include <iostream>
 #include <sys/mman.h>
 
 using namespace std;
 using namespace rdmc;
 
 group::group(uint16_t _group_number, size_t _block_size,
-             vector<uint16_t> _members, completion_callback_t callback,
-             completion_callback_t ss_callback):
-    group_number(_group_number),
-    block_size(_block_size),
-    chunks_per_block(1), // other values not supported
-    members(_members),
-    member_index(index_of(members, node_rank)),
-    chunk_size(block_size / chunks_per_block),
-    first_block_buffer(nullptr),
-    completion_callback(callback),
-    small_send_callback(ss_callback){
+             vector<uint32_t> _members, incoming_message_callback_t upcall,
+             completion_callback_t callback)
+    : members(_members),
+      first_block_buffer(nullptr),
+      completion_callback(callback),
+      incoming_message_upcall(upcall),
+      group_number(_group_number),
+      block_size(_block_size),
+      num_members(members.size()),
+      member_index(index_of(members, node_rank))
+{
+    if(member_index != 0) {
+        first_block_buffer = unique_ptr<char[]>(new char[block_size]);
+        memset(first_block_buffer.get(), 0, block_size);
 
-    if(member_index != 0){
-        // buffer = (char*)mmap(NULL, buffer_size, PROT_READ|PROT_WRITE, 
-        //                      MAP_ANON|MAP_PRIVATE, -1, 0);
-        // memset(buffer, 1, buffer_size);
-        // memset(buffer, 0, buffer_size);
-
-        first_block_buffer = (char*)mmap(NULL, block_size, PROT_READ|PROT_WRITE, 
-                                         MAP_ANON|MAP_PRIVATE, -1, 0);
-        memset(first_block_buffer, 1, block_size);
-        memset(first_block_buffer, 0, block_size);
+        first_block_mr = std::move(
+            make_unique<memory_region>(first_block_buffer.get(), block_size));
     }
 }
-group::~group(){
-    // munmap(buffer, buffer_size);
-    munmap(first_block_buffer, block_size);
+group::~group() {
     // TODO: free all other used resources.
 }
-void group::receive_chunk(tag_t tag){
-    size_t block_number = tag.index() / chunks_per_block;
+void group::receive_block(uint32_t send_imm) {
+    unique_lock<mutex> lock(monitor);
 
     assert(member_index > 0);
-    assert(tag.message_type() == tag_t::type::DATA_BLOCK);
-    assert(tag.group_number() == group_number);
-    assert(tag.message_number() == message_number);
-    
-    if(receive_step == 0){
-        if(++first_block_chunks == chunks_per_block){
-            LOG_EVENT(group_number, message_number, block_number,
-                      "received_first_block");
-            
-            num_blocks = (tag.message_size() - 1) / chunks_per_block + 1;
-            message_size = tag.message_size() * block_size / chunks_per_block;
-            assert(message_size <= buffer_size);
+	
+    if(receive_step == 0) {
+        num_blocks = parse_immediate(send_imm).total_blocks;
+        first_block_number =
+            min(get_first_block()->block_number, num_blocks - 1);
+        message_size = num_blocks * block_size;
 
-            first_block_number = min(get_first_block(member_index), num_blocks-1);
+        assert(*first_block_number == parse_immediate(send_imm).block_number);
 
-            num_received_blocks = 1;
-            received_chunks = vector<uint16_t>(num_blocks);
-            received_chunks[*first_block_number] = chunks_per_block;
+        //////////////////////////////////////////////////////
+        auto destination = incoming_message_upcall(message_size);
+        mr_offset = destination.offset;
+        mr = destination.mr;
+        //////////////////////////////////////////////////////
 
-            LOG_EVENT(group_number, message_number, *first_block_number,
-                      "initialized_internal_datastructures");
+        num_received_blocks = 1;
+        received_blocks = vector<bool>(num_blocks);
+        received_blocks[*first_block_number] = true;
 
-            assert(receive_step == 0);
-            auto transfer = get_incoming_transfer(receive_step);
-            while((!transfer || transfer->block_number == *first_block_number) &&
-                  receive_step < get_total_steps()){
-                transfer = get_incoming_transfer(++receive_step);
-            }
-            LOG_EVENT(group_number, message_number, *first_block_number,
-                      "found_next_transfer");
+        LOG_EVENT(group_number, message_number, *first_block_number,
+                  "initialized_internal_datastructures");
 
-            if(transfer){
-                LOG_EVENT(group_number, message_number, transfer->block_number,
-                          "posting_recv");
-                // printf("Posting recv #%d (receive_step = %d, *first_block_number = %d, total_steps = %d)\n", 
-                //        (int)transfer->block_number, (int)receive_step, (int)*first_block_number, (int)get_total_steps());
-                post_recv(transfer->block_number);
-            }
-
-            LOG_EVENT(group_number, message_number, *first_block_number,
-                      "calling_send_next_block");
-
-            send_next_block();
-
-            LOG_EVENT(group_number, message_number, *first_block_number,
-                      "returned_from_send_next_block");
-
-            if(!sending && send_step == get_total_steps() && 
-               num_received_blocks == num_blocks){
-                complete_message();
-            }
-        }
-    } else {
-        assert(tag.index() <= tag.message_size());
-
-        uint16_t num_chunks_received = ++received_chunks[block_number];
-        uint16_t chunks_in_block = chunks_per_block;
-
-        if(block_number == num_blocks - 1){
-            size_t total_chunks = (message_size - 1) / chunk_size + 1;
-            chunks_in_block = (total_chunks - 1) % chunks_per_block + 1;
+        assert(receive_step == 0);
+        auto transfer = get_incoming_transfer(receive_step);
+        while((!transfer || transfer->block_number == *first_block_number) &&
+              receive_step < get_total_steps()) {
+            transfer = get_incoming_transfer(++receive_step);
         }
 
-//    printf("Block #%d: %d/%d\n", (int)block_number, (int)num_chunks_received, chunks_in_block);
-//    fflush(stdout);
+        // cout << "receive_step = " << receive_step
+        //      << " transfer->block_number = "
+        //      << transfer->block_number
+        //      << " first_block_number = " << *first_block_number
+        //      << " total_steps = " << get_total_steps() << endl;
 
-        assert(num_chunks_received <= chunks_in_block);
-        if(num_chunks_received == chunks_in_block){
-            LOG_EVENT(group_number, message_number, block_number, "received_block");
+        LOG_EVENT(group_number, message_number, *first_block_number,
+                  "found_next_transfer");
 
+        if(transfer) {
+            LOG_EVENT(group_number, message_number, transfer->block_number,
+                      "posting_recv");
+            // printf("Posting recv #%d (receive_step = %d,
+            // *first_block_number =
+            // %d, total_steps = %d)\n",
+            //        (int)transfer->block_number, (int)receive_step,
+            // (int)*first_block_number, (int)get_total_steps());
+            post_recv(*transfer);
+            incoming_block = transfer->block_number;
+            send_ready_for_block(transfer->target);
+            // cout << "Issued Ready For Block AAAAAAAA (receive_step = "
+            //      << receive_step << ", target = " << transfer->target << ")"
+            //      << endl;
 
-            // Figure out the next block to receive.
-            auto transfer = get_incoming_transfer(++receive_step);
-            while(!transfer && receive_step < get_total_steps()){
-                transfer = get_incoming_transfer(++receive_step);
-            }
-            // Post a receive for it.
-            if(transfer){
-                post_recv(transfer->block_number);
-            }
-
-            // If we just finished receiving a block and we weren't
-            // previously sending, then try to send now.
-            if(!sending){
-                send_next_block();
-            }
-            // If we just received the last block then issue a completion callback
-            if(++num_received_blocks == num_blocks && !sending && 
-               send_step == get_total_steps()){
-                complete_message();
+            for(auto r = receive_step + 1; r < get_total_steps(); r++) {
+                auto t = get_incoming_transfer(r);
+                if(t) {
+                    // cout << "posting block for step " << (int)r
+                    //      << " (block #" << (*t).block_number << ")" << endl;
+                    post_recv(*t);
+                    break;
+                }
             }
         }
-    }
-}
-void group::complete_chunk_send(){
-    if(!(chunks_left > 0 && chunks_left <= chunks_per_block))
-        printf("chunks_left = %d\n", (int)chunks_left);
-    assert(chunks_left > 0 && chunks_left <= chunks_per_block); 
 
-    if(--chunks_left == 0){
-        LOG_EVENT(group_number, message_number, outgoing_block,
-                  "finished_sending_block");
+        LOG_EVENT(group_number, message_number, *first_block_number,
+                  "calling_send_next_block");
 
         send_next_block();
 
-        // If we just send the last block, and were already done
-        // receiving, then signal completion and prepare for the next
-        // message.
-        if(!sending && send_step == get_total_steps() && 
-           (member_index == 0 || num_received_blocks == num_blocks)){
+        LOG_EVENT(group_number, message_number, *first_block_number,
+                  "returned_from_send_next_block");
+
+        if(!sending && send_step == get_total_steps() &&
+           num_received_blocks == num_blocks) {
             complete_message();
         }
+    } else {
+        //        assert(tag.index() <= tag.message_size());
+        size_t block_number = incoming_block;
+        if(block_number != parse_immediate(send_imm).block_number) {
+            printf("Expected block #%d but got #%d on step %d\n",
+                   (int)block_number,
+                   (int)parse_immediate(send_imm).block_number,
+                   (int)receive_step);
+            fflush(stdout);
+        }
+        assert(block_number == parse_immediate(send_imm).block_number);
+
+        received_blocks[block_number] = true;
+
+		LOG_EVENT(group_number, message_number, block_number,
+				  "received_block");
+
+		// Figure out the next block to receive.
+		optional<block_transfer> transfer;
+		while(!transfer && receive_step+1 < get_total_steps()) {
+			transfer = get_incoming_transfer(++receive_step);
+		}
+			
+		// Post a receive for it.
+		if(transfer) {
+			incoming_block = transfer->block_number;
+			send_ready_for_block(transfer->target);
+			// cout << "Issued Ready For Block BBBBBBBB (receive_step = "
+			//      << receive_step << ", target = " << transfer->target
+			//      << ", total_steps = " << get_total_steps() << ")" << endl;
+			for(auto r = receive_step + 1; r < get_total_steps(); r++) {
+				auto t = get_incoming_transfer(r);
+				if(t) {
+					post_recv(*t);
+					break;
+				}
+			}
+		}
+
+		// If we just finished receiving a block and we weren't
+		// previously sending, then try to send now.
+		if(!sending) {
+			send_next_block();
+		}
+		// If we just received the last block and aren't still sending then
+		// issue a completion callback
+		if(++num_received_blocks == num_blocks && !sending &&
+		   send_step == get_total_steps()) {
+			complete_message();
+		}
     }
 }
-void group::send_message(char* data, size_t data_size){
-    assert(data_size > 0);
+void group::receive_ready_for_block(uint32_t step, uint32_t sender) {
+    unique_lock<mutex> lock(monitor);
+
+    receivers_ready.insert(sender);
+    
+    if(!sending && mr) {
+        send_next_block();
+    }
+    
+    auto it = rfb_queue_pairs.find(sender);
+    assert(it != rfb_queue_pairs.end());
+    it->second.post_empty_recv(
+        form_tag(group_number, sender, MessageType::READY_FOR_BLOCK));
+}
+void group::complete_block_send() {
+    unique_lock<mutex> lock(monitor);
+
+	LOG_EVENT(group_number, message_number, outgoing_block,
+			  "finished_sending_block");
+
+	send_next_block();
+
+	// If we just send the last block, and were already done
+	// receiving, then signal completion and prepare for the next
+	// message.
+    if(!sending && send_step == get_total_steps() &&
+       (member_index == 0 || num_received_blocks == num_blocks)) {
+        complete_message();
+	}
+}
+void group::send_message(shared_ptr<memory_region> message_mr, size_t offset,
+                         size_t length) {
+    LOG_EVENT(group_number, -1, -1, "send()");
+
+    unique_lock<mutex> lock(monitor);
+
+    assert(length > 0);
+    assert(offset + length <= message_mr->size);
     assert(member_index == 0);
-    assert(receive_step == 0); // Queueing sends is not supported.
+    assert(receive_step == 0);  // Queueing sends is not supported.
+    assert(send_step == 0);
+    assert(length <= block_size * std::numeric_limits<uint32_t>::max());
 
-    buffer = data;
-    buffer_size = message_size = data_size;
+    mr = message_mr;
+    mr_offset = offset;
+    message_size = length;
     num_blocks = (message_size - 1) / block_size + 1;
-
+    // printf("message_size = %lu, block_size = %lu, num_blocks = %lu\n",
+    //        message_size, block_size, num_blocks);
     LOG_EVENT(group_number, message_number, -1, "send_message");
 
     send_next_block();
     // No need to worry about completion here. We must send at least
     // one block, so we can't be done already.
 }
-void group::small_send(char* data, uint16_t data_size){
-    LOG_EVENT(group_number, -1,-1, "small_send()");
+void group::init() {
+    unique_lock<mutex> lock(monitor);
 
-    uint64_t tag = (uint64_t)tag_t::type::SMALL_SEND
-        | ((uint64_t)group_number << 40)
-        | ((uint64_t)data_size);
+    form_connections();
 
-    psm_mq_req_t req;
-    for(uint16_t target : members){
-        if(target == member_index)
-            continue;
-
-        request_context* context = new request_context;
-        context->data = data;
-        context->tag = tag_t(tag);
-        context->is_send = true;
-
-        psm_mq_isend(mq, epaddrs[members[target]], PSM_MQ_FLAG_SENDSYNC,
-                     tag, context->data, data_size, context, &req);
+    if(member_index > 0) {
+        auto transfer = get_first_block();
+        first_block_number = transfer->block_number;
+        post_recv(*transfer);
+        incoming_block = transfer->block_number;
+        send_ready_for_block(transfer->target);
+		// puts("Issued Ready For Block CCCCCCCCC");
     }
-    LOG_EVENT(group_number, -1,-1, "initiated_small_send");
 }
-void group::post_buffer(char* buf, size_t buf_size){
-    assert(buf_size > 0);
-    assert(member_index > 0);
-    assert(receive_step == 0); // Queueing receives is not supported.
-
-    buffer = buf;
-    buffer_size = buf_size;
-}
-void group::init(){
-    if(member_index > 0)
-        post_first_block();
-}
-void group::send_next_block(){
+void group::send_next_block() {
     sending = false;
-    if(send_step == get_total_steps()){
+    if(send_step == get_total_steps()) {
         return;
     }
     auto transfer = get_outgoing_transfer(send_step);
-    while(!transfer){
-        if(++send_step == get_total_steps())
-            return;
+    while(!transfer) {
+        if(++send_step == get_total_steps()) return;
 
         transfer = get_outgoing_transfer(send_step);
     }
 
     size_t target = transfer->target;
     size_t block_number = transfer->block_number;
-    size_t forged_block_number = transfer->forged_block_number;
-    chunks_left = chunks_per_block;
+    //    size_t forged_block_number = transfer->forged_block_number;
 
-    if(member_index > 0 && received_chunks[block_number] < chunks_per_block)
+    if(member_index > 0 && !received_blocks[block_number])
         return;
 
+    if(receivers_ready.count(transfer->target) == 0){
+        LOG_EVENT(group_number, message_number, block_number,
+                  "receiver_not_ready");
+        return;
+    }
+
+    receivers_ready.erase(transfer->target);
     sending = true;
     ++send_step;
 
-//    printf("sending block #%d to node #%d\n", (int)block_number, (int)target);
-//    fflush(stdout);
+	// printf("sending block #%d to node #%d on step %d\n", (int)block_number,
+	// 	   (int)target, (int)send_step-1);
+	// fflush(stdout);
+    auto it = queue_pairs.find(target);
+    assert(it != queue_pairs.end());
 
-    psm_mq_req_t req;
-    for(unsigned int chunk = 0; chunk < chunks_per_block; chunk++){
-        char* ptr = buffer + block_number * block_size 
-            + chunk * chunk_size;
-        size_t nbytes = min(chunk_size, 
-                            (size_t)(buffer + message_size - ptr));
-
-        if(first_block_number && block_number == *first_block_number)
-            ptr = first_block_buffer;
-
-        if(nbytes == 0){
-            // If this is the last block and we are sending fewer than
-            // chunks_per_block chunks, then adjust chunks_left
-            // accordingly
-            chunks_left -= chunks_per_block - chunk;
-            break;
-        }
-
-        uint64_t tag = (uint64_t)tag_t::type::DATA_BLOCK
-            | ((uint64_t)group_number << 40)
-            | ((uint64_t)message_number << 32)
-            | ((uint64_t)(forged_block_number * chunks_per_block + chunk) << 16)
-            | ((uint64_t)((message_size - 1) / chunk_size + 1));
-
-        request_context* context = new request_context;
-        context->data = ptr;
-        context->tag = tag_t(tag);
-        context->is_send = true;
-
-        psm_mq_isend(mq, epaddrs[members[target]], PSM_MQ_FLAG_SENDSYNC,
-                     tag, context->data, nbytes, context, &req);
+    if(first_block_number && block_number == *first_block_number) {
+        assert(it->second.post_send(
+            *first_block_mr, 0, block_size,
+            form_tag(group_number, target, MessageType::DATA_BLOCK),
+            form_immediate(num_blocks, block_number)));
+    } else {
+        size_t offset = block_number * block_size;
+        size_t nbytes = min(block_size, message_size - offset);
+        assert(it->second.post_send(
+            *mr, mr_offset + offset, nbytes,
+            form_tag(group_number, target, MessageType::DATA_BLOCK),
+            form_immediate(num_blocks, block_number)));
     }
     outgoing_block = block_number;
-    LOG_EVENT(group_number, message_number, block_number, "started_sending_block");
+    LOG_EVENT(group_number, message_number, block_number,
+              "started_sending_block");
 }
-void group::complete_message(){
+void group::complete_message() {
     // remap first_block into buffer
-    if(member_index > 0 && first_block_number){
+    if(member_index > 0 && first_block_number) {
         LOG_EVENT(group_number, message_number, *first_block_number,
                   "starting_remap_first_block");
-        if(block_size > (128<<10) && (block_size % 4096 == 0)){
-            char* tmp_buffer = (char*)mmap(NULL, block_size, 
-                                           PROT_READ|PROT_WRITE,
-                                           MAP_ANON|MAP_PRIVATE, -1, 0);
-            
-            mremap(buffer + block_size * (*first_block_number), block_size,
-                   block_size, MREMAP_FIXED | MREMAP_MAYMOVE, tmp_buffer);
+        // if(block_size > (128 << 10) && (block_size % 4096 == 0)) {
+        //     char *tmp_buffer =
+        //         (char *)mmap(NULL, block_size, PROT_READ | PROT_WRITE,
+        //                      MAP_ANON | MAP_PRIVATE, -1, 0);
 
-            mremap(first_block_buffer, block_size, block_size, 
-                   MREMAP_FIXED | MREMAP_MAYMOVE, 
-                   buffer + block_size * (*first_block_number));
-            first_block_buffer = tmp_buffer;
-        }else{
-            memcpy(buffer + block_size * (*first_block_number), first_block_buffer, 
-                   block_size);
-        }
+        //     mremap(buffer + block_size * (*first_block_number), block_size,
+        //            block_size, MREMAP_FIXED | MREMAP_MAYMOVE, tmp_buffer);
+
+        //     mremap(first_block_buffer, block_size, block_size,
+        //            MREMAP_FIXED | MREMAP_MAYMOVE,
+        //            buffer + block_size * (*first_block_number));
+        //     first_block_buffer = tmp_buffer;
+        // } else {
+        memcpy(mr->buffer + mr_offset + block_size * (*first_block_number),
+               first_block_buffer.get(), block_size);
+        // }
         LOG_EVENT(group_number, message_number, *first_block_number,
                   "finished_remap_first_block");
     }
-    completion_callback(group_number, rdmc::SUCCESS, buffer);
+    completion_callback(group_number, rdmc::SUCCESS, mr->buffer + mr_offset,
+                        message_size);
 
     ++message_number;
     sending = false;
     send_step = 0;
     receive_step = 0;
-    chunks_left = 0;
-    first_block_chunks = 0;
+    mr.reset();
     // if(first_block_buffer == nullptr && member_index > 0){
-    //     first_block_buffer = (char*)mmap(NULL, block_size, PROT_READ|PROT_WRITE, 
+    //     first_block_buffer = (char*)mmap(NULL, block_size,
+    // PROT_READ|PROT_WRITE,
     //                                      MAP_ANON|MAP_PRIVATE, -1, 0);
     //     memset(first_block_buffer, 1, block_size);
     //     memset(first_block_buffer, 0, block_size);
     // }
     first_block_number = boost::none;
 
-    if(member_index != 0){
+    if(member_index != 0) {
         num_received_blocks = 0;
-        received_chunks.clear();
-        post_first_block();
+        received_blocks.clear();
+        auto transfer = get_first_block();
+        assert(transfer);
+        first_block_number = transfer->block_number;
+        post_recv(*transfer);
+        incoming_block = transfer->block_number;
+        send_ready_for_block(transfer->target);
+        // cout << "Issued Ready For Block DDDDDDD (target = " << transfer->target
+        //      << ")" << endl;
     }
 }
-void group::post_recv(size_t block_number){
-    psm_mq_req_t req;
-    uint64_t mask = tag_t::TYPE_MASK
-        | tag_t::GROUP_MASK
-        | tag_t::MESSAGE_MASK
-        | tag_t::INDEX_MASK;
+void group::post_recv(block_transfer transfer) {
+    auto it = queue_pairs.find(transfer.target);
+    assert(it != queue_pairs.end());
 
-    for(int chunk = 0; chunk < chunks_per_block; chunk++){
-        char* ptr = buffer + block_size * block_number + chunk_size * chunk;
-        size_t nbytes = min(chunk_size, (size_t)(buffer + message_size - ptr));
+    // printf("Posting receive buffer for block #%d from node #%d\n",
+    //        (int)transfer.block_number, (int)transfer.target);
+    // fflush(stdout);
 
-        if(nbytes == 0)
-            break;
+    if(first_block_number && transfer.block_number == *first_block_number) {
+        assert(it->second.post_recv(
+            *first_block_mr, 0, block_size,
+            form_tag(group_number, transfer.target, MessageType::DATA_BLOCK)));
+    } else {
+        size_t offset = block_size * transfer.block_number;
+        size_t length = min(block_size, (size_t)(message_size - offset));
 
-        uint64_t tag = (int64_t)tag_t::type::DATA_BLOCK
-            | ((uint64_t)group_number << 40)
-            | ((uint64_t)message_number << 32)
-            | ((uint64_t)(block_number * chunks_per_block + chunk) << 16);
-
-        request_context* context = new request_context;
-        context->data = ptr;
-        context->tag = tag_t(tag);
-        context->is_send = false;
-
-        psm_mq_irecv(mq, tag, mask, 0, ptr, nbytes, context, &req);
+        if(length > 0) {
+            assert(it->second.post_recv(*mr, mr_offset + offset, length,
+                                        form_tag(group_number, transfer.target,
+                                                 MessageType::DATA_BLOCK)));
+        }
     }
-    LOG_EVENT(group_number, message_number, block_number,
+    LOG_EVENT(group_number, message_number, transfer.block_number,
               "posted_receive_buffer");
-
 }
-void group::post_first_block(){
-    size_t block_number = get_first_block(member_index);
+void group::connect(size_t neighbor) {
+    queue_pairs.emplace(neighbor, members[neighbor]);
 
-    uint64_t mask = tag_t::TYPE_MASK
-        | tag_t::GROUP_MASK
-        | tag_t::MESSAGE_MASK
-        | tag_t::INDEX_MASK;
+    auto it =  rfb_queue_pairs.emplace(neighbor, members[neighbor]).first;
+    it->second.post_empty_recv(
+        form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK));
+}
 
-    for(int chunk = 0; chunk < chunks_per_block; chunk++){
-        char* ptr = first_block_buffer + chunk_size * chunk;
+void group::send_ready_for_block(uint32_t neighbor){
+    auto it = rfb_queue_pairs.find(neighbor);
+    assert(it != rfb_queue_pairs.end());
+    it->second.post_empty_send(
+        form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK), 0);
+}
 
-        uint64_t tag = (int64_t)tag_t::type::DATA_BLOCK
-            | ((uint64_t)group_number << 40)
-            | ((uint64_t)message_number << 32)
-            | ((uint64_t)(block_number * chunks_per_block + chunk) << 16);
-
-        request_context* context = new request_context;
-        context->data = ptr;
-        context->tag = tag_t(tag);
-        context->is_send = false;
-
-        psm_mq_irecv(mq, tag, mask, 0, ptr, chunk_size, context,
-                     &first_block_request);
+void chain_group::form_connections() {
+    // establish connection with member_index-1 and member_index+1, if they
+    // exist
+    if(member_index == 0) {
+        if(num_members == 1) {
+            return;
+        }
+        // with only node with rank 1
+        connect(1);
+    } else if(member_index == num_members - 1) {
+        connect(num_members - 2);
+    } else {
+        connect(member_index - 1);
+        connect(member_index + 1);
     }
-    LOG_EVENT(group_number, message_number, block_number, "posted_first_block");
 }
-size_t chain_group::get_total_steps(){
-    size_t total_steps = num_blocks + members.size() - 2;
+size_t chain_group::get_total_steps() const {
+    size_t total_steps = num_blocks + num_members - 2;
     return total_steps;
 }
-optional<group::block_transfer> chain_group::get_outgoing_transfer(size_t step){
+optional<group::block_transfer> chain_group::get_outgoing_transfer(
+    size_t step) const {
     size_t block_number = step - member_index;
-    
+
     if(member_index > step || block_number >= num_blocks ||
-       member_index == members.size() - 1){
+       member_index == num_members - 1) {
         return boost::none;
     }
 
-    return block_transfer{(uint16_t)(member_index + 1), block_number, block_number};
+    return block_transfer{(uint32_t)(member_index + 1), block_number};
 }
-optional<group::block_transfer> chain_group::get_incoming_transfer(size_t step){
+optional<group::block_transfer> chain_group::get_incoming_transfer(
+    size_t step) const {
     size_t block_number = (step + 1) - member_index;
-    if(member_index > step+1 || block_number >= num_blocks ||
-       member_index == 0){
+    if(member_index > step + 1 || block_number >= num_blocks ||
+       member_index == 0) {
         return boost::none;
     }
-    return block_transfer{(uint16_t)(member_index - 1), block_number, block_number};
+    return block_transfer{(uint32_t)(member_index - 1), block_number};
 }
-size_t chain_group::get_first_block(uint16_t receiver){
-    return 0;
+optional<group::block_transfer> chain_group::get_first_block() const {
+    if(member_index == 0) return boost::none;
+    return block_transfer{(uint32_t)(member_index - 1), 0};
 }
 
-
-size_t sequential_group::get_total_steps(){
-    return num_blocks * (members.size()-1);
+void sequential_group::form_connections() {
+    // if sender, connect to every receiver
+    if(member_index == 0) {
+        for(auto i = 1u; i < num_members; ++i) {
+            connect(i);
+        }
+    }
+    // if receiver, connect only to sender
+    else {
+        connect(0);
+    }
 }
-optional<group::block_transfer> sequential_group::get_outgoing_transfer(size_t step){
-    if(member_index > 0 || step >= num_blocks*(members.size()-1)){
+size_t sequential_group::get_total_steps() const {
+    return num_blocks * (num_members - 1);
+}
+optional<group::block_transfer> sequential_group::get_outgoing_transfer(
+    size_t step) const {
+    if(member_index > 0 || step >= num_blocks * (num_members - 1)) {
         return boost::none;
     }
 
     size_t block_number = step % num_blocks;
-    return block_transfer{(uint16_t)(1 + step / num_blocks), block_number, block_number};
+    return block_transfer{(uint32_t)(1 + step / num_blocks), block_number};
 }
-optional<group::block_transfer> sequential_group::get_incoming_transfer(size_t step){
-    if(1 + step / num_blocks != member_index){
+optional<group::block_transfer> sequential_group::get_incoming_transfer(
+    size_t step) const{
+    if(1 + step / num_blocks != member_index) {
         return boost::none;
     }
 
     size_t block_number = step % num_blocks;
-    return block_transfer{(uint16_t)0, block_number, block_number};
+    return block_transfer{(uint32_t)0, block_number};
 }
-size_t sequential_group::get_first_block(uint16_t receiver){
-    return 0;
+optional<group::block_transfer> sequential_group::get_first_block() const {
+    if(member_index == 0) return boost::none;
+    return block_transfer{0, 0};
 }
 
-
-size_t tree_group::get_total_steps(){
-    unsigned int log2_num_members = ceil(log2(members.size()));
+void tree_group::form_connections() {
+	assert(false); // TODO
+}
+size_t tree_group::get_total_steps() const {
+    unsigned int log2_num_members = ceil(log2(num_members));
     return num_blocks * log2_num_members;
 }
-optional<group::block_transfer> tree_group::get_outgoing_transfer(size_t step){
-    size_t stage = step / num_blocks;
-    uint16_t neighbor = member_index ^ ((uint16_t)1 << stage);
+optional<group::block_transfer> tree_group::get_outgoing_transfer(
+    size_t step) const {
 
-    if(member_index >= (1<<stage) || stage >= 16 || neighbor < member_index || 
-       neighbor >= members.size()){
-        return boost::none;
+	assert(false); //TODO
+	return boost::none;
+}
+optional<group::block_transfer> tree_group::get_incoming_transfer(
+    size_t step) const {
+
+	assert(false); // TODO
+	return boost::none;
+}
+optional<group::block_transfer> tree_group::get_first_block() const {
+    if(member_index == 0) return boost::none;
+    return block_transfer{(uint32_t)((member_index + 1) / 2 - 1), 0};
+}
+binomial_group::binomial_group(uint16_t group_number, size_t block_size,
+                               vector<uint32_t> members,
+                               incoming_message_callback_t upcall,
+                               completion_callback_t callback)
+    : group(group_number, block_size, members, upcall, callback),
+      log2_num_members(floor(log2(num_members))) /*,
+      vertex(member_index & ((1 << log2_num_members) - 1))*/ {
+    // size_t vertex_twin = vertex | (1 << log2_num_members);
+    // if(vertex_twin < num_members) {
+    //     assert(false && "NPOT group size not yet supported");
+    //     twin = (member_index == vertex) ? vertex_twin : vertex;
+    // }
+
+    // for(unsigned int index = 0; index < log2_num_members; index++) {
+    //     if(vertex < (2ull << index)) {
+    //         vertex_first_block_step = index;
+    //     }
+    // }
+}
+
+void binomial_group::form_connections() {
+    // size_t num_neighbors = floor(log2(num_members));
+
+    uint32_t twin = (member_index < (1u << log2_num_members))
+                        ? member_index + (1 << log2_num_members) - 1
+                        : member_index + 1 - (1 << log2_num_members);
+
+	uint32_t vertex = min(member_index, twin);
+	
+	if(member_index > 0 && twin < num_members)
+		connect(twin);
+
+    for(size_t i = 0; i < log2_num_members; ++i) {
+        // connect to num_members^ (1 << i)
+		uint32_t neighbor = vertex ^ (1 << i);
+		uint32_t neighbor_twin = neighbor + (1 << log2_num_members) - 1;
+
+		connect(neighbor);
+		if(neighbor > 0 && neighbor_twin < num_members)
+			connect(neighbor_twin);
     }
-
-    size_t block_number = step % num_blocks;
-    return block_transfer{neighbor, block_number, block_number};
-}
-optional<group::block_transfer> tree_group::get_incoming_transfer(size_t step){
-    size_t stage = step / num_blocks;
-    uint16_t neighbor = member_index ^ ((uint16_t)1 << stage);
-
-    
-    if(stage >= 16 || !((1<<stage) <= member_index && member_index < (2 << stage))){
-        return boost::none;
-    }
-
-    size_t block_number = step % num_blocks;
-    return block_transfer{neighbor, block_number, block_number};
-}
-size_t tree_group::get_first_block(uint16_t receiver){
-    return 0;
 }
 
+size_t binomial_group::get_total_steps() const{
+    if(1u << log2_num_members == num_members)
+        return num_blocks + log2_num_members - 1;
 
-size_t binomial_group::get_total_steps(){
-    size_t total_steps = num_blocks + floor(log2(members.size())) - 1;
-    return total_steps;
+    return num_blocks + log2_num_members;
 }
-optional<group::block_transfer> binomial_group::get_outgoing_transfer(uint16_t sender, 
-                                                                      size_t send_step){
-/*
- * During a typical step, the rotated rank will indicate:
- *  
- *   0000...0001 -> block = send_step
- *   1000...0001 -> block = send_step - 1
- *   x100...0001 -> block = send_step - 2
- *   xx10...0001 -> block = send_step - 3
- *
- *   xxxx...xx11 -> block = send_step - log2_num_members + 1
- *   xxxx...xxx0 -> block = send_step - log2_num_members
- */
+optional<group::block_transfer> binomial_group::get_vertex_outgoing_transfer(
+    uint32_t sender, size_t send_step, uint32_t num_members,
+    unsigned int log2_num_members, size_t num_blocks, size_t total_steps) {
+    /*
+   * During a typical step, the rotated rank will indicate:
+   *
+   *   0000...0001 -> block = send_step
+   *   1000...0001 -> block = send_step - 1
+   *   x100...0001 -> block = send_step - 2
+   *   xx10...0001 -> block = send_step - 3
+   *
+   *   xxxx...xx11 -> block = send_step - log2_num_members + 1
+   *   xxxx...xxx0 -> block = send_step - log2_num_members
+   */
 
-    unsigned int log2_num_members = floor(log2(members.size()));
-
-    size_t rank_mask = (~((size_t)0)) >> (sizeof(size_t) * CHAR_BIT - log2_num_members);
+    size_t rank_mask =
+        (~((size_t)0)) >> (sizeof(size_t) * CHAR_BIT - log2_num_members);
 
     size_t step_index = send_step % log2_num_members;
-    uint16_t neighbor = sender ^ (1 << step_index);
-    if(/*log2(member_index|neighbor) > send_step+1 ||*/ send_step >= get_total_steps() ||
-       neighbor == 0){
-//        printf("send_step = %d, neighbor = %d, log2(...) = %f\n", (int)send_step, (int)neighbor, log2(member_index|neighbor));
-//        fflush(stdout);
+    uint32_t neighbor = sender ^ (1 << step_index);
+    if(send_step >= total_steps || neighbor == 0 ||
+       (send_step == total_steps - 1 && num_members > 1u << log2_num_members)) {
+        //        printf("send_step = %d, neighbor = %d, log2(...) = %f\n",
+        // (int)send_step, (int)neighbor, log2(member_index|neighbor));
+        //        fflush(stdout);
         return boost::none;
     }
 
-    
-    size_t rotated_rank = ((neighbor | (neighbor << log2_num_members)) 
-                           >> step_index) & rank_mask;
-//    printf("send_step = %d, rotated_rank = %x\n", (int)send_step, (int)rotated_rank);
-//    fflush(stdout);
+    size_t rotated_rank =
+        ((neighbor | (neighbor << log2_num_members)) >> step_index) & rank_mask;
+    //    printf("send_step = %d, rotated_rank = %x\n", (int)send_step,
+    // (int)rotated_rank);
+    //    fflush(stdout);
 
-    if((rotated_rank & 1) == 0){
-        if(send_step < log2_num_members){
-//            printf("send_step < log2_num_members\n");
-//            fflush(stdout);
+    if((rotated_rank & 1) == 0) {
+        if(send_step < log2_num_members) {
+            //            printf("send_step < log2_num_members\n");
+            //            fflush(stdout);
             return boost::none;
         }
-        return block_transfer{neighbor, send_step - log2_num_members, send_step - log2_num_members};
+        return block_transfer{neighbor, send_step - log2_num_members};
     }
 
-    for(unsigned int index = 1; index < log2_num_members; index++){
-        if(rotated_rank & (1 << index)){
-            if(send_step + index < log2_num_members){
-//                printf("send_step + index < log2_num_members\n");
-//                fflush(stdout);
+    for(unsigned int index = 1; index < log2_num_members; index++) {
+        if(rotated_rank & (1 << index)) {
+            if(send_step + index < log2_num_members) {
                 return boost::none;
             }
-            size_t forged_block_number = send_step + index - log2_num_members;
-            size_t block_number = min(forged_block_number, num_blocks - 1);
-            if(forged_block_number != get_first_block(neighbor))
-                forged_block_number = block_number;
-            return block_transfer{neighbor, block_number, forged_block_number};
+            size_t block_number =
+                min(send_step + index - log2_num_members, num_blocks - 1);
+            return block_transfer{neighbor, block_number};
         }
     }
 
-    size_t forged_block_number = send_step;
-    size_t block_number = min(forged_block_number, num_blocks - 1);
-    if(forged_block_number != get_first_block(neighbor))
-        forged_block_number = block_number;
-
-    return block_transfer{neighbor, block_number, forged_block_number};
+    size_t block_number = min(send_step, num_blocks - 1);
+    return block_transfer{neighbor, block_number};
 }
-optional<group::block_transfer> binomial_group::get_outgoing_transfer(size_t send_step){
-    return get_outgoing_transfer(member_index, send_step);
-}
-optional<group::block_transfer> binomial_group::get_incoming_transfer(size_t send_step){
-    unsigned int log2_num_members = floor(log2(members.size()));
-
+optional<group::block_transfer> binomial_group::get_vertex_incoming_transfer(
+    uint32_t vertex, size_t send_step, uint32_t num_members,
+    unsigned int log2_num_members, size_t num_blocks, size_t total_steps) {
     size_t step_index = send_step % log2_num_members;
-    uint16_t neighbor = member_index ^ (1 << step_index);
+    uint32_t neighbor = vertex ^ (1 << step_index);
 
-    auto transfer = get_outgoing_transfer(neighbor, send_step);
+    auto transfer =
+        get_vertex_outgoing_transfer(neighbor, send_step, num_members,
+                                     log2_num_members, num_blocks, total_steps);
     if(!transfer) return boost::none;
-    return block_transfer{neighbor, transfer->block_number, transfer->forged_block_number};
+    return block_transfer{neighbor, transfer->block_number};
 }
-size_t binomial_group::get_first_block(uint16_t receiver){
-    for(size_t n = 0; n < 16; n++){
-        if((receiver & (1 << n)) != 0)
-            return n;
+optional<group::block_transfer> binomial_group::get_outgoing_transfer(
+    uint32_t node, size_t step, uint32_t num_members, unsigned int log2_num_members,
+    size_t num_blocks, size_t total_steps) {
+    uint32_t vertex = (node < (1u << log2_num_members))
+                          ? node
+                          : node + 1 - (1 << log2_num_members);
+    uint32_t intervertex_receiver = get_intervertex_receiver(
+        vertex, step, num_members, log2_num_members, num_blocks, total_steps);
+
+	if(step >= total_steps){
+		return boost::none;
+    } else if(step == total_steps - 1 && num_blocks == 1 &&
+              num_members > (1u << log2_num_members)) {
+        uint32_t intervertex_receiver =
+            get_intervertex_receiver(vertex, step, num_members,
+                                     log2_num_members, num_blocks, total_steps);
+
+		uint32_t target =
+            get_intervertex_receiver(vertex ^ 1, step, num_members,
+                                     log2_num_members, num_blocks, total_steps);
+
+        bool node_has_twin =
+            node != 0 && vertex + (1 << log2_num_members) - 1 < num_members;
+        bool target_has_twin =
+            target != 0 &&
+            (target >= (1u << log2_num_members) ||
+             target + (1u << log2_num_members) - 1 < num_members);
+
+        if((node_has_twin && node == intervertex_receiver) || node == 1 ||
+           !target_has_twin)
+            return boost::none;
+        else
+			return block_transfer{target, 0};
+    } else if(node == intervertex_receiver && vertex != 0 &&
+              vertex + (1u << log2_num_members) - 1 < num_members) {
+        auto block =
+            get_intravertex_block(vertex, step, num_members, log2_num_members,
+                                  num_blocks, total_steps);
+
+        if(!block) return boost::none;
+        uint32_t twin = (node < (1u << log2_num_members))
+                            ? node + (1 << log2_num_members) - 1
+                            : node + 1 - (1 << log2_num_members);
+        return block_transfer{twin, *block};
+    } else {
+        if(step == total_steps - 1 && num_members > 1u << log2_num_members) {
+            if((vertex + (1u << log2_num_members) - 1) >= num_members ||
+               vertex == 0)
+                return boost::none;
+
+            uint32_t twin = (node < (1u << log2_num_members))
+                                ? node + (1 << log2_num_members) - 1
+                                : node + 1 - (1 << log2_num_members);
+
+            size_t s = step;
+            uint32_t r = twin;
+            while(r == twin) {
+                assert(s > 0);
+                r = get_intervertex_receiver(vertex, --s, num_members,
+                                             log2_num_members, num_blocks,
+                                             total_steps);
+            }
+            auto transfer = get_vertex_incoming_transfer(
+                vertex, s, num_members, log2_num_members, num_blocks,
+                total_steps);
+
+            assert(transfer);
+            transfer->target = twin;
+            return transfer;
+        }
+
+        auto transfer = get_vertex_outgoing_transfer(vertex, step, num_members,
+                                                     log2_num_members,
+                                                     num_blocks, total_steps);
+
+        if(transfer) {
+            transfer->target = get_intervertex_receiver(
+                transfer->target, step, num_members, log2_num_members,
+                num_blocks, total_steps);
+        }
+        return transfer;
+    }
+}
+optional<group::block_transfer> binomial_group::get_incoming_transfer(
+    uint32_t node, size_t step, uint32_t num_members, unsigned int log2_num_members,
+    size_t num_blocks, size_t total_steps) {
+    uint32_t vertex = (node < (1u << log2_num_members))
+                          ? node
+                          : node + 1 - (1 << log2_num_members);
+    uint32_t intervertex_receiver = get_intervertex_receiver(
+        vertex, step, num_members, log2_num_members, num_blocks, total_steps);
+
+	if(step >= total_steps){
+		return boost::none;
+    } else if(step == total_steps - 1 && num_blocks == 1 &&
+              num_members > (1u << log2_num_members)) {
+
+        uint32_t target =
+            get_intervertex_receiver(vertex ^ 1, step, num_members,
+                                     log2_num_members, num_blocks, total_steps);
+
+		bool node_has_twin =
+            node != 0 && vertex + (1 << log2_num_members) - 1 < num_members;
+
+        if(target >= (1u << log2_num_members))
+            target = target + 1 - (1 << log2_num_members);
+        else if(target != 0 &&
+                target + (1 << log2_num_members) - 1 < num_members)
+            target = target + (1 << log2_num_members) - 1;
+
+        if(!node_has_twin || node != intervertex_receiver)
+            return boost::none;
+        else{
+            return block_transfer{target, 0};
+        }
+    } else if(node != intervertex_receiver) {
+        auto block =
+            get_intravertex_block(vertex, step, num_members, log2_num_members,
+                                  num_blocks, total_steps);
+
+        if(!block) return boost::none;
+        uint32_t twin = (node < (1u << log2_num_members))
+                            ? node + (1 << log2_num_members) - 1
+                            : node + 1 - (1 << log2_num_members);
+        return block_transfer{twin, *block};
+    } else {
+        if(step == total_steps - 1 && num_members > 1u << log2_num_members) {
+            if((vertex + (1u << log2_num_members) - 1) >= num_members ||
+               vertex == 0)
+                return boost::none;
+
+            uint32_t twin = (node < (1u << log2_num_members))
+                                ? node + (1 << log2_num_members) - 1
+                                : node + 1 - (1 << log2_num_members);
+
+            auto transfer =
+                get_outgoing_transfer(twin, step, num_members, log2_num_members,
+                                      num_blocks, total_steps);
+
+            assert(transfer);
+
+            transfer->target = twin;
+            return transfer;
+        }
+
+        auto transfer = get_vertex_incoming_transfer(vertex, step, num_members,
+                                                     log2_num_members,
+                                                     num_blocks, total_steps);
+        if(transfer) {
+            uint32_t neighbor = get_intervertex_receiver(
+                transfer->target, step, num_members, log2_num_members,
+                num_blocks, total_steps);
+
+            if(neighbor == 0)
+                transfer->target = neighbor;
+            else if(neighbor >= (1u << log2_num_members))
+                transfer->target = neighbor + 1 - (1u << log2_num_members);
+            else if(neighbor + (1u << log2_num_members) - 1 < num_members)
+                transfer->target = neighbor + (1u << log2_num_members) - 1;
+            else
+                transfer->target = neighbor;
+        }
+        return transfer;
+    }
+}
+uint32_t binomial_group::get_intervertex_receiver(uint32_t vertex, size_t step,
+                                                  uint32_t num_members,
+                                                  unsigned int log2_num_members,
+                                                  size_t num_blocks,
+                                                  size_t total_steps) {
+    // If the vertex only has one node, then no intravertex transfer can take
+    // place.
+    if((vertex + (1u << log2_num_members) - 1) >= num_members || vertex == 0)
+        return vertex;
+
+    size_t weight = 0;
+    for(int i = 0; i < 32; i++) {
+        if(vertex & (1 << i)) weight++;
     }
 
-    return 0;
+    // Compute the number of times the intravertex sender has flipped since the
+    // start of the message. We do not count the current step, because that
+    // will not affect the transfer going on now.
+    auto total_flips = [&](size_t step) {
+        size_t flips = (step / log2_num_members) * weight;
+        for(unsigned int i = 0; i < step % log2_num_members; i++) {
+            if(vertex & (1 << i)) flips++;
+        }
+        return flips;
+    };
+
+    if(total_flips(step) % 2 == 1) {
+        return vertex + (1u << log2_num_members) - 1;
+    }
+    return vertex;
+}
+optional<size_t> binomial_group::get_intravertex_block(
+    uint32_t vertex, size_t step, uint32_t num_members, unsigned int log2_num_members,
+    size_t num_blocks, size_t total_steps) {
+    // If the vertex only has one node, then no intravertex transfer can take
+    // place.
+    if((vertex + (1u << log2_num_members) - 1) >= num_members || vertex == 0)
+        return boost::none;
+
+    size_t weight = 0;
+    for(int i = 0; i < 32; i++) {
+        if(vertex & (1 << i)) weight++;
+    }
+
+    // Compute the number of times the intravertex sender has flipped since the
+    // start of the message. We do not count the current step, because that
+    // will not affect the transfer going on now.
+    auto total_flips = [&](size_t step) {
+        size_t flips = ((step) / log2_num_members) * weight;
+        for(unsigned int i = 0; i < (step) % log2_num_members; i++) {
+            if(vertex & (1 << i)) flips++;
+        }
+        return flips;
+    };
+
+    size_t flips = total_flips(step);
+
+    // The first block received triggers a flip. If we haven't gotten it yet,
+    // then clearly there can't be an intravertex transfer.
+    if(flips == 0) {
+        return boost::none;
+    }
+
+    uint32_t target = vertex;
+    if(flips % 2 == 0) {
+        target += (1 << log2_num_members) - 1;
+    }
+
+    size_t prev_receive_block_step = step - 1;
+    if(flips != total_flips(step - 1)) {
+        if(flips <= 1) return boost::none;
+
+        while(total_flips(prev_receive_block_step) != flips - 2) {
+            --prev_receive_block_step;
+        }
+    }
+
+    auto last = get_vertex_incoming_transfer(vertex, prev_receive_block_step,
+                                             num_members, log2_num_members,
+                                             num_blocks, total_steps);
+
+    if(!last) return boost::none;
+    return last->block_number;
+}
+
+optional<group::block_transfer> binomial_group::get_outgoing_transfer(
+    size_t step) const {
+    return get_outgoing_transfer(member_index, step, num_members,
+                                 log2_num_members, num_blocks,
+                                 get_total_steps());
+}
+optional<group::block_transfer> binomial_group::get_incoming_transfer(
+    size_t step) const {
+    return get_incoming_transfer(member_index, step, num_members,
+                                 log2_num_members, num_blocks,
+                                 get_total_steps());
+}
+
+optional<group::block_transfer> binomial_group::get_first_block() const {
+    if(member_index == 0) return boost::none;
+
+    size_t simulated_total_steps = num_members == 1u << log2_num_members
+                                       ? 1024 + log2_num_members - 1
+                                       : 1024 + log2_num_members;
+
+    size_t step = 0;
+	optional<block_transfer> transfer;
+	while(!transfer){
+        transfer = get_incoming_transfer(member_index, step++, num_members,
+                                         log2_num_members, 1024,
+                                         simulated_total_steps);
+        assert(step < simulated_total_steps);
+	}
+	
+	return transfer;
 }

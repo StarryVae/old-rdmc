@@ -1,10 +1,10 @@
 
-#include "util.h"
-#include "psm_helper.h"
-#include "message.h"
-#include "rdmc.h"
 #include "group_send.h"
+#include "message.h"
 #include "microbenchmarks.h"
+#include "rdmc.h"
+#include "util.h"
+#include "verbs_helper.h"
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cinttypes>
 #include <condition_variable>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -24,450 +26,382 @@
 #include <sstream>
 #include <string>
 #include <sys/mman.h>
-#include <sys/resource.h> 
+#include <sys/resource.h>
 #include <thread>
 #include <queue>
+#include <unistd.h>
 #include <vector>
-#include <sched.h>
 
 using namespace std;
 
-namespace rdmc{
-    unsigned int job_number;
-    unsigned int job_step;
-    uint16_t node_rank;
-    uint16_t num_nodes;
+namespace rdmc {
+unsigned int job_number;
+unsigned int job_step;
+uint32_t node_rank;
+uint32_t num_nodes;
+vector<string> node_addresses;
+	
+// const unsigned int NUM_SMALL_SENDS = 1024;
+// const size_t SMALL_SEND_SIZE = 0xffff;
+// char *small_send_buffers[NUM_SMALL_SENDS];
+// shutdown_msg shutdown_receive_buffer;
 
-//used to initialize the mq
-    map<unsigned int, uint64_t> connections;
-//used to send/receive data
-    psm_mq_t mq;
-    vector<psm_epaddr_t> epaddrs;
+// queue<std::function<void()> > queued_operations;
+// mutex queued_operations_lock;
+// condition_variable queued_operations_cv;
+// atomic<bool> queued_operation_flag;
 
-    const unsigned int NUM_SMALL_SENDS = 1024;
-    const size_t SMALL_SEND_SIZE = 0xffff;
-    char* small_send_buffers[NUM_SMALL_SENDS];
+atomic<bool> shutdown_flag;
 
-    vector<request_context*> unposted_small_sends;
+// map from group number to group
+map<uint16_t, shared_ptr<group> > groups;
+mutex groups_lock;
 
-    request_context shutdown_request_context;
-    shutdown_msg shutdown_receive_buffer;
+struct {
+    // Queue Pairs and associated remote memory regions used for performing a
+    // barrier.
+    vector<queue_pair> queue_pairs;
+    vector<remote_memory_region> remote_memory_regions;
 
-    queue<std::function<void()>> queued_operations;
-    mutex queued_operations_lock;
-    condition_variable queued_operations_cv;
-    atomic<bool> queued_operation_flag;
+    // Additional queue pairs which will handle incoming writes (but which this
+    // node does not need to interact with directly).
+    vector<queue_pair> extra_queue_pairs;
 
-    atomic<bool> shutdown_flag;
+	// RDMA memory region used for doing the barrier
+    array<volatile int64_t, 32> steps;
+    unique_ptr<memory_region> steps_mr;
 
-    //map from group number to group
-    map<uint16_t, unique_ptr<group>> groups;
+	// Current barrier number, and a memory region to issue writes from.
+    volatile int64_t number = -1;
+    unique_ptr<memory_region> number_mr;
 
-    static void issue_queued_operation(float timeout){
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
+	// Number of steps per barrier.
+    unsigned int total_steps;
 
-        auto duration = chrono::nanoseconds((unsigned int)(timeout * 1.e6));
-        auto send_ready = [&](){return !queued_operations.empty();};
-        if(!send_ready()) {
-            if(timeout == 0 ||
-               !queued_operations_cv.wait_for(lock, duration, send_ready)){
-                return;
-            }
+	// Lock to ensure that only one barrier is in flight at a time.
+    mutex lock;
+} barrier_state;
+
+// static void issue_queued_operation(float timeout) {
+//     std::unique_lock<std::mutex> lock(queued_operations_lock);
+
+//     auto duration = chrono::nanoseconds((unsigned int)(timeout * 1.e6));
+//     auto send_ready = [&]() { return !queued_operations.empty(); };
+//     if(!send_ready()) {
+//         if(timeout == 0 ||
+//            !queued_operations_cv.wait_for(lock, duration, send_ready)) {
+//             return;
+//         }
+//     }
+
+//     // apply operation
+//     (queued_operations.front())();
+
+//     // remove from queue
+//     queued_operations.pop();
+//     LOG_EVENT(-1, -1, -1, "completed_queued_operation");
+
+//     queued_operation_flag = !queued_operations.empty();
+// }
+
+static void main_loop() {
+    const int max_work_completions = 1024;
+    unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
+
+    while(true) {
+        int num_completions = poll_for_completions(
+            max_work_completions, work_completions.get(), shutdown_flag);
+
+        if(shutdown_flag) {
+            groups.clear();
+            verbs_destroy();
+            exit(0);
         }
 
-        // apply operation
-        (queued_operations.front())();
+        assert(num_completions > 0);  // Negative indicates an IBV error.
 
-        // remove from queue
-        queued_operations.pop();
-        LOG_EVENT(-1,-1,-1, "completed_queued_operation");
+        for(int i = 0; i < num_completions; i++) {
+            ibv_wc& wc = work_completions[i];
+            auto tag = parse_tag(wc.wr_id);
 
-        queued_operation_flag = !queued_operations.empty();
-    }
+            if(wc.status != 0) {
+                printf("wc.status = %d; wc.wr_id = 0x%llx; imm = 0x%x\n",
+                       (int)wc.status, (long long)wc.wr_id,
+                       (unsigned int)wc.imm_data);
+                fflush(stdout);
+            } else if(wc.opcode == IBV_WC_SEND) {
+                if(tag.message_type == MessageType::DATA_BLOCK) {
+                    shared_ptr<group> g;
 
-    static void main_loop(){
-        bool fast_poll = true;
-
-        psm_mq_req_t req;
-        while(true){
-            if(shutdown_flag){
-                TRACE("Finalizing PSM");
-                psm_mq_finalize(mq);
-                psm_finalize();
-
-                TRACE("Exiting...!");
-                exit(0);
-            }else if(fast_poll){
-                if(psm_mq_ipeek(mq, &req, NULL) != PSM_OK){
-                    bool got_event = false;
-                    uint64_t end_time = get_time() + 15000000;
-                    while(get_time() < end_time && !got_event){
-                        if(queued_operation_flag)
-                            issue_queued_operation(0.0);
-                        got_event = psm_mq_ipeek(mq, &req, NULL) == PSM_OK;
+                    {
+                        unique_lock<mutex> lock(groups_lock);
+                        auto it = groups.find(tag.group_number);
+                        assert(it != groups.end());
+                        g = it->second;
                     }
-                    if(!got_event){
-//                        fast_poll = false;
-                        continue;
+
+                    g->complete_block_send();
+                } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
+                    //                    TRACE("Completed sending ready for
+                    //                    block message.");
+                } else {
+                    printf(
+                        "sent unrecognized message type?! (message_type=%d)\n",
+                        (int)tag.message_type);
+                }
+            } else if(wc.opcode == IBV_WC_RECV) {
+                if(tag.message_type == MessageType::DATA_BLOCK) {
+                    assert(wc.wc_flags & IBV_WC_WITH_IMM);
+                    shared_ptr<group> g;
+
+                    {
+                        unique_lock<mutex> lock(groups_lock);
+                        auto it = groups.find(tag.group_number);
+                        assert(it != groups.end());
+                        g = it->second;
                     }
-                }
-            }else if(psm_mq_ipeek(mq, &req, NULL) != PSM_OK){
-                issue_queued_operation(1.0);
-                continue;
-            }
-        
-            fast_poll = true;
-        
-//        uint64_t t = get_time();
 
-            psm_mq_status_t status;
+                    g->receive_block(wc.imm_data);
+                } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
+                    shared_ptr<group> g;
 
-            psm_error_t e = psm_mq_test(&req, &status);
-            assert(e == PSM_OK);
-
-            request_context context = *(request_context*)status.context;
-            tag_t::type msg_type = context.tag.message_type();
-
-            if(context.is_send){
-                if(msg_type == tag_t::type::SHUTDOWN){
-                    puts("Send completed (SHUTDOWN)");
-                    fflush(stdout);
-                    delete (shutdown_msg*)context.data;
-                }
-                else if(msg_type == tag_t::type::DATA_BLOCK){
-                    TRACE("Send completed (DATA_BLOCK)");
-
-                    auto it = groups.find(context.tag.group_number());
-                    assert(it != groups.end());
-                    it->second->complete_chunk_send();
-                }else if(msg_type == tag_t::type::SMALL_SEND){
-                    TRACE("Send completed (SMALL_SEND)");
-
-                    LOG_EVENT(context.tag.group_number(), -1, -1,
-                              "completed_small_send");
-
-                    auto it = groups.find(context.tag.group_number());
-                    assert(it != groups.end());
-
-                    it->second->small_send_callback(context.tag.group_number(),
-                                                    completion_status::SUCCESS,
-                                                    (char*)context.data);
-                }else{
-                    puts("Sent unrecognized message type?!");
-                }
-            
-                delete (request_context*)status.context;
-            }else{
-                tag_t tag{status.msg_tag};
-                if(msg_type == tag_t::type::SHUTDOWN){
-                    TRACE("Got shutdown message. Exiting...");
-
-                    psm_mq_finalize(mq);
-                    psm_finalize();
-                    exit(0);
-                }else if(msg_type == tag_t::type::DATA_BLOCK){
-                    TRACE("Got data block");
-                    auto it = groups.find(tag.group_number());
-                    assert(it != groups.end());
-
-                    it->second->receive_chunk(tag);
-                    delete (request_context*)status.context;
-                }else if(msg_type == tag_t::type::SMALL_SEND){
-                    auto it = groups.find(context.tag.group_number());
-                    assert(it != groups.end());
-
-                    it->second->small_send_callback(context.tag.group_number(),
-                                                    completion_status::SUCCESS,
-                                                    (char*)context.data);
-
-
-                    unposted_small_sends.emplace_back((request_context*)status.context);
-                    if(unposted_small_sends.size() >= NUM_SMALL_SENDS / 2){
-                        for(auto context : unposted_small_sends){
-                            psm_mq_irecv(mq, context->tag.raw(), tag_t::TYPE_MASK, 0,
-                                         context->data, SMALL_SEND_SIZE, context, &req);
-                        }
-                        unposted_small_sends.clear();
+                    {
+                        unique_lock<mutex> lock(groups_lock);
+                        auto it = groups.find(tag.group_number);
+                        if(it != groups.end())
+							g = it->second;
+						else
+							TRACE("Got RFB for group not yet created...");
                     }
-                }else{
-                    put_flush("Got unrecognized packet type.");
+
+					if(g){
+						g->receive_ready_for_block(wc.imm_data, tag.target);
+					}
+                } else {
+                    printf(
+                        "received message with unrecognized type, even though "
+                        "we posted the buffer?! (message_type=%d)\n",
+                        (int)tag.message_type);
                 }
+            } else if(wc.opcode == IBV_WC_RDMA_WRITE) {
+                if(tag.message_type == MessageType::BARRIER) {
+                    // TRACE("Completed performing barrier write.");
+                }
+            } else {
+                puts("Sent unrecognized completion type?!");
             }
         }
     }
-    void print_stats(){
-        psm_mq_stats_t stats;
-        psm_mq_get_stats(mq, &stats);
+}
 
-#define PRINT_STAT(s) printf(#s " = %d\n", (int)s);
-        PRINT_STAT(stats.rx_user_num);
-        PRINT_STAT(stats.rx_sys_num);
-        PRINT_STAT(stats.tx_num);
-        PRINT_STAT(stats.tx_eager_num);
-        PRINT_STAT(stats.tx_rndv_num);
-        PRINT_STAT(stats.tx_shm_num);
-        PRINT_STAT(stats.rx_shm_num);
-        PRINT_STAT(stats.rx_sysbuf_num);
+void initialize() {
+    TRACE("starting initialize");
+
+    init_environment();
+    TRACE("env initialized");
+
+    assert(verbs_initialize());
+
+    TRACE("verbs initialized");
+
+    // const size_t buffer_size = 1024 * 1024 * 1024;
+    // char *buffer = (char *)mmap(NULL, buffer_size, PROT_READ | PROT_WRITE,
+    //                             MAP_ANON | MAP_PRIVATE, -1, 0);
+    // memset(buffer, 1, buffer_size);
+    // memset(buffer, 0, buffer_size);
+
+    // auto t1 = get_time();
+    // memory_region mr(buffer, buffer_size);
+    // auto t2 = get_time();
+    // cout << "MR create time = " << (t2 - t1) / 1000 << " us" << endl;
+
+    // if(node_rank == 0) {
+    //     memset(buffer + 4096, 13, 4096);
+    //     memset(buffer + 8192, 14, 4096);
+
+    // } else {
+    //     memset(buffer + 4096, 15, 4096);
+    //     memset(buffer + 8192, 16, 4096);
+    // }
+    // cout << "Buffer[4096 + 12] = " << (int)buffer[4096 + 12] << endl;
+
+    // t1 = get_time();
+    // auto r = mremap(buffer + 4096, 4096, 4096, MREMAP_FIXED | MREMAP_MAYMOVE,
+    //                 buffer + 8192);
+    // t2 = get_time();
+    // cout << "remap time = " << (t2 - t1) / 1000 << " us\n";
+    // cout << "Buffer[8192 + 12] = " << (int)buffer[8192 + 12] << endl;
+
+    // TRACE("Created MR");
+    // if(node_rank == 0) {
+    //     queue_pair qp(1);
+    //     TRACE("Created QP");
+    //     qp.post_send(mr, 4096, 4096);
+    //     TRACE("Posted SEND");
+    //     poll_for_completion();
+    //     TRACE("Finished polling");
+    // } else {
+    //     queue_pair qp(0);
+    //     TRACE("Created QP");
+    //     qp.post_recv(mr, 4096, 4096);
+    //     TRACE("Posted RECV");
+    //     poll_for_completion();
+    //     TRACE("Finished polling");
+    //     cout << "Buffer[8192 + 12] = " << (int)buffer[8192 + 12] << endl;
+    // }
+
+    barrier_state.total_steps = ceil(log2(num_nodes));
+    for(unsigned int m = 0; m < barrier_state.total_steps; m++)
+        barrier_state.steps[m] = -1;
+    barrier_state.steps_mr =
+        make_unique<memory_region>((char*)&barrier_state.steps[0],
+                                   barrier_state.total_steps * sizeof(int64_t));
+    barrier_state.number_mr = make_unique<memory_region>(
+        (char*)&barrier_state.number, sizeof(barrier_state.number));
+
+    set<uint32_t> targets;
+    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
+        auto target = (node_rank + (1 << m)) % num_nodes;
+        auto target2 =
+            (num_nodes * (1 << m) + node_rank - (1 << m)) % num_nodes;
+        targets.insert(target);
+        targets.insert(target2);
+    }
+
+    map<uint32_t, queue_pair> qps;
+    for(auto target : targets) {
+        qps.emplace(target, target);
+    }
+
+    auto remote_mrs =
+        verbs_exchange_memory_regions(*barrier_state.steps_mr.get());
+    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
+        auto target = (node_rank + (1 << m)) % num_nodes;
+
+        barrier_state.remote_memory_regions.push_back(
+            remote_mrs.find(target)->second);
+
+        auto qp_it = qps.find(target);
+        barrier_state.queue_pairs.push_back(std::move(qp_it->second));
+		qps.erase(qp_it);
+    }
+
+	for(auto it = qps.begin(); it != qps.end(); it++){
+        barrier_state.extra_queue_pairs.push_back(std::move(it->second));
+		qps.erase(it);
+	}
+	
+	cout << "total_steps = " << barrier_state.total_steps << endl;
+
+    // if(node_rank == 0){
+    //     for(int i = 1; i < num_nodes; i++){
+    //         barriers.emplace_back(i);
+
+    //         barriers.back().qp.post_empty_recv(
+    //             form_tag(0, i, MessageType::BARRIER));
+    //     }
+    // } else {
+    //     barriers.emplace_back(0);
+
+    //     barriers.back().qp.post_empty_recv(
+    //         form_tag(0, 0, MessageType::BARRIER));
+    // }
+
+    TRACE("Spawning main loop");
+    thread t(main_loop);
+    t.detach();
+}
+
+void create_group(uint16_t group_number, std::vector<uint32_t> members,
+                  size_t block_size, send_algorithm algorithm,
+                  incoming_message_callback_t incoming_upcall,
+                  completion_callback_t callback) {
+    shared_ptr<group> g;
+    if(algorithm == BINOMIAL_SEND) {
+        g = make_shared<binomial_group>(group_number, block_size, members,
+                                        incoming_upcall, callback);
+    } else if(algorithm == CHAIN_SEND) {
+        g = make_shared<chain_group>(group_number, block_size, members,
+                                     incoming_upcall, callback);
+    } else if(algorithm == SEQUENTIAL_SEND) {
+        g = make_shared<sequential_group>(group_number, block_size, members,
+                                          incoming_upcall, callback);
+    } else if(algorithm == TREE_SEND) {
+        g = make_shared<tree_group>(group_number, block_size, members,
+                                    incoming_upcall, callback);
+    } else {
+        puts("Unsupported group type?!");
         fflush(stdout);
     }
-    static void psm_initialize(){
-        int major = PSM_VERNO_MAJOR;
-        int minor = PSM_VERNO_MINOR;
 
-//    setenv("PSM_DEVICES","self,ipath", 1);
-//    setenv("PSM_TRACEMASK", "0x183", 1);
-//    setenv("PSM_RCVTHREAD_FREQ", "500:1000:1", 1);
+    unique_lock<mutex> lock(groups_lock);
+    auto p = groups.emplace(group_number, std::move(g));
+    assert(p.second);
+    p.first->second->init();
+}
 
-        psm_init(&major, &minor);
-        LOG_EVENT(-1,-1,-1,"psm initialized");
-        psm_ep_t ep;
-        psm_epid_t epid;
-        struct psm_ep_open_opts opts;
-        psm_uuid_t uuid = {
-            (uint8_t)(job_number & 0xff),       (uint8_t)((job_number>>8) & 0xff),
-            (uint8_t)((job_number>>16) & 0xff), (uint8_t)((job_number>>24) & 0xff),
-            (uint8_t)(job_step & 0xff),         (uint8_t)((job_step>>8) & 0xff),
-            (uint8_t)0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0, 0};
+void destroy_group(uint16_t group_number) {
+    unique_lock<mutex> lock(groups_lock);
+    LOG_EVENT(group_number, -1, -1, "destroy_group");
+    groups.erase(group_number);
+}
+void shutdown() {
+    shutdown_flag = true;
 
-        psm_ep_open_opts_get_defaults(&opts);
-//    opts.affinity = PSM_EP_OPEN_AFFINITY_SKIP;
-        psm_ep_open(uuid, &opts, &ep, &epid);
+    while(1) {
+        /* do nothing */;
+    }
+}
+void send(uint16_t group_number, shared_ptr<memory_region> mr, size_t offset,
+          size_t length) {
+    shared_ptr<group> g;
+    {
+        unique_lock<mutex> lock(groups_lock);
+        auto it = groups.find(group_number);
+        assert(it != groups.end());
+        g = it->second;
+    }
+    LOG_EVENT(group_number, -1, -1, "preparing_to_send_message");
+    g->send_message(mr, offset, length);
+}
+void barrier() {
+    // See:
+    // http://mvapich.cse.ohio-state.edu/static/media/publications/abstract/kinis-euro03.pdf
 
-        TRACE("ep open");
-        //std::this_thread::sleep_for(std::chrono::seconds(20));
-        find_connections2(epid);
-        TRACE("connections found");
-        vector<psm_epid_t> epids;
-        for(int i = 0; i < num_nodes; i++){
-            if(i != node_rank){
-                epids.push_back((psm_epid_t)connections[i]);
-//            cout << i << " " << connections[i] << endl;
-            }
-        }
+    unique_lock<mutex> lock(barrier_state.lock);
+    LOG_EVENT(-1, -1, -1, "start_barrier");
+    barrier_state.number++;
 
-        vector<psm_error_t> errors((epids.size()));
-        epaddrs = vector<psm_epaddr_t> ((epids.size()));
+    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
+        assert(barrier_state.queue_pairs[m].post_write(
+            *barrier_state.number_mr.get(), 0, 8,
+            form_tag(0, (rdmc::node_rank + (1 << m)) % rdmc::num_nodes,
+                     MessageType::BARRIER),
+            barrier_state.remote_memory_regions[m], m * 8, false, true));
 
-        //boost::this_thread::sleep(boost::posix_time::milliseconds(30000));
-        TRACE("ep connecting");
-        psm_ep_connect(ep, epids.size(), &epids[0], NULL, 
-                       &errors[0], &epaddrs[0], 0);
-
-        //add placeholder for this node to epids array
-        epaddrs.insert(epaddrs.begin()+node_rank, 0);
-
-        TRACE("ep connectioned");
-        psm_mq_init(ep, PSM_MQ_ORDERMASK_ALL, NULL, 0, &mq);
-        TRACE("mp initialized");
-
-        uint32_t devunits = 0;
-        psm_ep_num_devunits(&devunits);
-        if(devunits != 1){
-            printf("num_devunits = %d\n", devunits);
-            fflush(stdout);
-        }
-//    put_flush("Doing ping pong test");
-//    ping_pong();    
-//    print_stats();
-//    sbandwidth_test();
-//    sbandwidth_test2();
-//    bandwidth_test();
-//    memtest();
-
-        //std::this_thread::sleep_for(std::chrono::seconds(1));
-
-        // for(int i = 0; i < 2; i++){
-        //     do_barrier();
-        //     ping_pong();
-
-        //     do_barrier();
-        //     latency_test();
-
-        //     do_barrier();
-        //     blocking_send_latency_test();
-        // }
-        do_barrier();
-        bandwidth_test();
-        do_barrier();
-
-        TRACE("posting receives");
-
-        psm_mq_req_t req;
-        request_context* context = &shutdown_request_context;
-        context->data = &shutdown_receive_buffer;
-        context->tag = tag_t(tag_t::type::SHUTDOWN);
-        context->is_send = false;
-        psm_mq_irecv(mq, context->tag.raw(), tag_t::TYPE_MASK, 0, context->data,
-                     sizeof(shutdown_msg), context, &req);
-
-        for(unsigned int i = 0; i < NUM_SMALL_SENDS; i++){
-            small_send_buffers[i] = new char[SMALL_SEND_SIZE];
-            memset(small_send_buffers[i], 0, SMALL_SEND_SIZE);
-            request_context* context = new request_context;
-            context->data = small_send_buffers[i];
-            context->tag = tag_t(tag_t::type::SMALL_SEND);
-            context->is_send = false;
-            psm_mq_irecv(mq, context->tag.raw(), tag_t::TYPE_MASK, 0,
-                         context->data, SMALL_SEND_SIZE, context, &req);
-        }
-
-        thread t(main_loop);
-        t.detach();
-        //boost::this_thread::sleep(boost::posix_time::milliseconds(1000));
-        //say_hello();
-        //    sequential_send();
-        //tree_send(2);
-        //tree_send(1);
-
-//    const size_t buffer_size = 1u << 30;
-//    char* buffer = (char*)malloc(buffer_size);
-//    assert(buffer);
-//    tree_multicast(0, buffer, buffer_size);
-//    chain_multicast(0, buffer, buffer_size);
-//    tree_multicast(0, buffer, block_size);
-//    chain_multicast(0, buffer, block_size);
-//    free(buffer);
+        while(barrier_state.steps[m] < barrier_state.number)
+			/* do nothing*/;
     }
 
-    void initialize(){
-        shutdown_flag = false;
-        queued_operation_flag = false;
+    // if(node_rank == 0) {
+    //     for(auto& b : barriers){
+    //         if(!b.triggered) {
+    //             barriers_cv.wait(lock, [&b]() { return b.triggered; });
+    //         }
+    //         b.qp.post_empty_send(form_tag(0, 0, MessageType::BARRIER),
+    //                                        0);
+    //         b.triggered = false;
+    //     }
+    // } else {
+    //     auto& b = barriers.front();
+    //     b.qp.post_empty_send(form_tag(0, node_rank, MessageType::BARRIER),
+    //     0);
+    //     if(!b.triggered) {
+    //         barriers_cv.wait(lock, [&b]() { return b.triggered; });
+    //     }
+    //     b.triggered = false;
+    // }
 
-        init_environment();
-        TRACE("env initialized");
-
-        psm_initialize();
-    }
-
-    void create_group(uint16_t group_number, std::vector<uint16_t> members,
-                      size_t block_size, send_algorithm algorithm, 
-                      completion_callback_t callback,
-                      completion_callback_t ss_callback){
-        std::mutex m;
-        std::condition_variable cv;
-        volatile atomic<bool> done{false};
-
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-        queued_operations.push([&]() {
-            if(algorithm == BINOMIAL_SEND){
-                auto group = 
-                    make_unique<binomial_group>(group_number, block_size,
-                                                members, callback, ss_callback);
-                group->init();
-                groups.emplace(group_number, std::move(group));
-            }else if(algorithm == CHAIN_SEND){
-                auto group = 
-                    make_unique<chain_group>(group_number, block_size,
-                                             members, callback, ss_callback);
-                group->init();
-                groups.emplace(group_number, std::move(group));
-            }else if(algorithm == SEQUENTIAL_SEND){
-                auto group = 
-                    make_unique<sequential_group>(group_number, block_size,
-                                               members, callback, ss_callback);
-                group->init();
-                groups.emplace(group_number, std::move(group));
-            }else if(algorithm == TREE_SEND){
-                auto group = 
-                    make_unique<tree_group>(group_number, block_size,
-                                            members, callback, ss_callback);
-                group->init();
-                groups.emplace(group_number, std::move(group));
-            }else{
-                puts("Unsupported send type?!");
-                fflush(stdout);
-            }
-            done = true;
-            cv.notify_one();
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-        lock.unlock();
-
-        std::unique_lock<std::mutex> lk(m);
-        cv.wait(lk, [&done]()->bool{return done;});
-    }
-    void destroy_group(uint16_t group_number){
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-        queued_operations.emplace([group_number]() {
-            LOG_EVENT(group_number, -1, -1, "destroy_group");
-            groups.erase(group_number);
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-    }
-    void shutdown(){
-        for(uint16_t i = 0; i < num_nodes; i++){
-            if(i != node_rank){
-                shutdown_msg s;
-                tag_t tag = tag_t(tag_t::type::SHUTDOWN);
-                psm_mq_send(mq, epaddrs[i], PSM_MQ_FLAG_SENDSYNC,
-                            tag.raw(), &s, sizeof(s));
-            }
-        }
-  
-        shutdown_flag = true;
-        while(1){
-            /* do nothing */;
-        }
-    }
-    void send(uint16_t group_number, char* buffer, size_t size){
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-        queued_operations.emplace([group_number, buffer, size]() {
-            LOG_EVENT(group_number, -1,-1, "preparing_to_send_message");
-            auto it = groups.find(group_number);
-            assert(it != groups.end());
-            it->second->send_message(buffer, size);
-            LOG_EVENT(group_number, -1,-1, "started_sending_message");
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-        LOG_EVENT(group_number, -1, -1, "queued_send_message");
-    }
-    void small_send(uint16_t group_number, char* buffer, uint16_t size){
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-        queued_operations.emplace([group_number, buffer, size]() {
-            LOG_EVENT(group_number, -1, -1, "small_send_lambda");
-            auto it = groups.find(group_number);
-            assert(it != groups.end());
-            it->second->small_send(buffer, size);
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-        LOG_EVENT(group_number, -1, -1, "queued_small_send");
-    }
-    void post_receive_buffer(uint16_t group_number, char* buffer, size_t size){
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-        queued_operations.emplace([group_number, buffer, size]() {
-            auto it = groups.find(group_number);
-            assert(it != groups.end());
-            it->second->post_buffer(buffer, size);
-            LOG_EVENT(group_number, -1, -1, "buffer_posted");
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-        LOG_EVENT(group_number, -1, -1, "queued_post_receive_buffer");
-    }
-    void barrier(){
-        std::mutex m;
-        std::condition_variable cv;
-        volatile atomic<bool> done{false};
-
-        std::unique_lock<std::mutex> lock(queued_operations_lock);
-
-        queued_operations.emplace([&done, &cv](){
-            LOG_EVENT(-1,-1,-1, "start_barrier");
-            do_barrier();
-            LOG_EVENT(-1,-1,-1, "end_barrier");
-            done = true;
-            cv.notify_one();
-        });
-        queued_operation_flag = true;
-        queued_operations_cv.notify_all();
-        lock.unlock();
-
-        std::unique_lock<std::mutex> lk(m);
-        cv.wait(lk, [&done]()->bool{return done;});
-        LOG_EVENT(-1,-1,-1, "resume_from_barrier");
-    }
+    LOG_EVENT(-1, -1, -1, "end_barrier");
+}
 }
