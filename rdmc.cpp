@@ -270,7 +270,7 @@ void initialize() {
 
     map<uint32_t, queue_pair> qps;
     for(auto target : targets) {
-        qps.emplace(target, target);
+        qps.emplace(target, queue_pair(target));
     }
 
     auto remote_mrs =

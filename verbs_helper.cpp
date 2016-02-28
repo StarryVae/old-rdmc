@@ -425,15 +425,37 @@ bool verbs_initialize() {
     TRACE("Starting connection phase");
     // try to connect to nodes greater than node_rank
     for(uint32_t i = num_nodes - 1; i > node_rank; --i) {
-        cout << "trying to connect to node rank " << i << endl;
-        sockets[i] = std::move(
-            tcp::socket(config_vec[i].ip_addr, config_vec[i].tcp_port));
+		try{
+			sockets[i] = tcp::socket(config_vec[i].ip_addr,
+									 config_vec[i].tcp_port);
+		}catch(tcp::exception){
+			fprintf(stderr, "WARNING: failed to node %u at %s:%d",
+					(unsigned int)i, config_vec[i].ip_addr.c_str(),
+					config_vec[i].tcp_port);
 
-        uint32_t remote_rank = sockets[i].exchange(node_rank);
-        printf("remote_rank = %d\n", (int)remote_rank);
-        fflush(stdout);
-        assert(remote_rank == i);
-        TRACE("Connected to node");
+			continue;
+		}
+		
+		// Make sure that the connection works, and that we've connected to the
+		// right node.
+        uint32_t remote_rank = 0;
+		if(!sockets[i].exchange(node_rank, remote_rank)){
+			fprintf(stderr,
+					"WARNING: failed to exchange rank with node %u at %s:%d",
+					(unsigned int)i, config_vec[i].ip_addr.c_str(),
+					config_vec[i].tcp_port);
+			sockets.erase(i);
+			continue;
+		}else if(remote_rank != i){
+			fprintf(stderr,
+					"WARNING: node at %s:%d replied with wrong rank (expected"
+					"%d but got %d)", config_vec[i].ip_addr.c_str(),
+					config_vec[i].tcp_port, (unsigned int)i,
+					(unsigned int)remote_rank);
+
+			sockets.erase(i);
+			continue;			
+		}
     }
 
     TRACE("starting listen phase");
@@ -444,13 +466,20 @@ bool verbs_initialize() {
     // now accept connections
     // make sure that the caller is correctly identified with its id!
     for(int i = node_rank - 1; i >= 0; --i) {
-        cout << "waiting for nodes with lesser rank" << endl;
+		try{
+			tcp::socket s = listener.accept();
 
-        tcp::socket s = listener.accept();
-        uint32_t remote_rank = s.exchange(node_rank);
-        sockets[remote_rank] = std::move(s);
-
-        cout << "connected to node rank " << remote_rank << endl << endl;
+			uint32_t remote_rank = 0;
+			if(!s.exchange(node_rank, remote_rank)){
+				fprintf(stderr, "WARNING: failed to exchange rank with node");
+				continue;
+			}
+		
+			sockets[remote_rank] = std::move(s);
+		}catch(tcp::exception){
+			fprintf(stderr, "Got error while attempting to listing on port"); 
+			continue;
+		}
     }
 
     TRACE("Done connecting");
@@ -649,11 +678,10 @@ queue_pair::queue_pair(size_t remote_index) {
     struct cm_con_data_t remote_con_data;
     memset(&local_con_data, 0, sizeof(local_con_data));
     memset(&remote_con_data, 0, sizeof(remote_con_data));
-    int rc = 0;
     union ibv_gid my_gid;
 
     if(config.gid_idx >= 0) {
-        rc = ibv_query_gid(verbs_resources.ib_ctx, config.ib_port,
+        int rc = ibv_query_gid(verbs_resources.ib_ctx, config.ib_port,
                            config.gid_idx, &my_gid);
         if(rc) {
             fprintf(stderr, "could not get gid for port %d, index %d\n",
@@ -671,7 +699,9 @@ queue_pair::queue_pair(size_t remote_index) {
     // fprintf(stdout, "Local QP number  = 0x%x\n", qp->qp_num);
     // fprintf(stdout, "Local LID        = 0x%x\n", verbs_resources.port_attr.lid);
 
-    remote_con_data = sock.exchange(local_con_data);
+    if(!sock.exchange(local_con_data, remote_con_data)){
+		assert(false);
+	}
 
     /* save the remote side attributes, we will need it for the post SR */
     //    verbs_resources.remote_props = remote_con_data;
@@ -700,7 +730,9 @@ queue_pair::queue_pair(size_t remote_index) {
     /* sync to make sure that both sides are in states that they can connect to
    * prevent packet loss */
     /* just send a dummy char back and forth */
-    sock.exchange(0);
+	int tmp = -1;
+    if(!sock.exchange(0, tmp) || tmp != 0)
+		assert(false);
 }
 bool queue_pair::post_send(const memory_region &mr, size_t offset,
                            size_t length, uint64_t wr_id, uint32_t immediate) {
@@ -871,20 +903,26 @@ int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {
 map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     const memory_region& mr) {
     map<uint32_t, remote_memory_region> remote_mrs;
-	for(uint32_t i = 0; i < num_nodes; i++){
-		if(i != node_rank){
-			uint64_t buffer;
-			size_t size;
-			uint32_t rkey;
-			
-			buffer = sockets[i].exchange<uint64_t>((uintptr_t)mr.buffer);
-			size = sockets[i].exchange<size_t>(mr.size);
-			rkey = sockets[i].exchange<uint64_t>(mr.get_rkey());
-            remote_mrs.emplace((uint32_t)i,
-                               remote_memory_region(buffer, size, rkey));
+	for(auto it = sockets.begin(); it != sockets.end();){
+		uintptr_t buffer;
+		size_t size;
+		uint32_t rkey;
 
-			cout << buffer << " " << size << " " << rkey << endl;
-        }
+		bool still_connected =
+			it->second.exchange((uintptr_t)mr.buffer, buffer) &&
+			it->second.exchange((size_t)mr.size, size) &&
+			it->second.exchange((uint32_t)mr.get_rkey(), rkey);
+
+		if(still_connected){
+			remote_mrs.emplace(it->first,
+							   remote_memory_region(buffer, size, rkey));
+
+			++it;
+		}else{
+			fprintf(stderr, "WARNING: lost connection to node %u\n",
+					(unsigned int)it->first);
+			it = sockets.erase(it);
+		}
 	}
 	return remote_mrs;
 }

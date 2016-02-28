@@ -9,10 +9,13 @@
 
 namespace tcp{
 
+	struct exception {};
+	struct connection_failure: public exception {};
+	
     class socket{
         int sock;
         
-        socket(int _sock): sock(_sock) {}
+        explicit socket(int _sock): sock(_sock) {}
 
         friend class connection_listener;
     public:
@@ -30,25 +33,24 @@ namespace tcp{
         bool write(char* buffer, size_t size);
 
         template<class T>
-        T exchange(T local){
+			bool exchange(T local, T& remote){
             static_assert(std::is_pod<T>::value,
                           "Can't send non-pod type over TCP");
 
-            assert(sock >= 0);
-            
-            T remote;
-            bool b = write((char*)&local, sizeof(T));
-            assert(b);
-            b = read((char*)&remote, sizeof(T));
-            assert(b);
-            return remote;
+			if(sock < 0){
+				fprintf(stderr, "WARNING: Attempted to write to closed socket\n");
+				return false;
+			}
+
+            return write((char*)&local, sizeof(T)) &&
+                   read((char*)&remote, sizeof(T));
         }
     };
 
     class connection_listener{
         std::unique_ptr<int, std::function<void(int*)>> fd;
     public:
-        connection_listener(int port);
+        explicit connection_listener(int port);
         socket accept();
     };
     

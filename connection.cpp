@@ -15,11 +15,11 @@ using namespace std;
 
 socket::socket(string servername, int port) {
     sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(sock >= 0);
+    if(sock < 0) throw connection_failure();
 
     hostent *server;
     server = gethostbyname(servername.c_str());
-    assert(server != NULL);
+	if(server == nullptr) throw connection_failure();
 
     sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
@@ -44,8 +44,11 @@ socket::~socket() {
 }
 
 bool socket::read(char *buffer, size_t size) {
-    assert(sock >= 0);
-
+    if(sock < 0){
+		fprintf(stderr, "WARNING: Attempted to read from closed socket\n");
+		return false;
+	}
+	
     size_t total_bytes = 0;
     while(total_bytes < size) {
         size_t new_bytes =
@@ -59,7 +62,10 @@ bool socket::read(char *buffer, size_t size) {
 }
 
 bool socket::write(char *buffer, size_t size) {
-    assert(sock >= 0);
+    if (sock < 0) {
+		fprintf(stderr, "WARNING: Attempted to write to closed socket\n");
+        return false;
+    }
 
     return ::write(sock, buffer, size) == (ssize_t)size;
 }
@@ -68,7 +74,7 @@ connection_listener::connection_listener(int port) {
     sockaddr_in serv_addr;
 
     int listenfd = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(listenfd >= 0);
+	if(listenfd < 0) throw connection_failure();
 
     int reuse_addr = 1;
     setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse_addr,
@@ -88,8 +94,10 @@ connection_listener::connection_listener(int port) {
 
 socket connection_listener::accept() {
     int sock = ::accept(*fd, NULL, 0);
-    assert(sock >= 0);
+	if(sock < 0) throw connection_failure();
 
+	throw string("ABC");
+	
     return socket(sock);
 }
 }

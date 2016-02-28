@@ -38,7 +38,7 @@ bool file_exists(const string &name) {
 }
 
 void create_directory(const string &name) {
-    mkdir("/home/cnd/mod1", S_IRWXU | S_IRWXG | S_IRWXO);
+    mkdir(name.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
 }
 
 // return bits / nanosecond = Gigabits/second
@@ -119,16 +119,17 @@ double compute_stddev(std::vector<double> v) {
     return std::sqrt(sq_sum / v.size() - mean * mean);
 }
 
-const char *basename(const char *path) {
-    const char *base = strrchr(path, '/');
-    return base ? base + 1 : path;
-}
-
 vector<event> events;
 std::mutex events_mutex;
 void flush_events() {
     std::unique_lock<std::mutex> lock(events_mutex);
 
+	auto basename = [](const char *path) {
+		const char *base = strrchr(path, '/');
+		return base ? base + 1 : path;
+	};
+
+	
     static bool print_header = true;
     if(print_header) {
         printf(
@@ -142,20 +143,20 @@ void flush_events() {
                    basename(e.file), e.line, e.event_name);
 
         } else if(e.message_number == (size_t)(-1)) {
-            printf("%5.3f, %s:%d, %s, %" PRIu32 "\n",
-                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
-                   e.event_name, e.group_number);
+			printf("%5.3f, %s:%d, %s, %" PRIu32 "\n",
+				   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
+				   e.event_name, e.group_number);
 
         } else if(e.block_number == (size_t)(-1)) {
-            printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu\n",
-                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
-                   e.event_name, e.group_number, e.message_number);
+			printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu\n",
+				   1.0e-6 * (e.time - epoch_start), basename(e.file),
+				   e.line, e.event_name, e.group_number, e.message_number);
 
         } else {
             printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu, %zu\n",
-                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
-                   e.event_name, e.group_number, e.message_number,
-                   e.block_number);
+				   1.0e-6 * (e.time - epoch_start), basename(e.file),
+				   e.line, e.event_name, e.group_number, e.message_number,
+				   e.block_number);
         }
     }
     fflush(stdout);

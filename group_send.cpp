@@ -25,8 +25,8 @@ group::group(uint16_t _group_number, size_t _block_size,
         first_block_buffer = unique_ptr<char[]>(new char[block_size]);
         memset(first_block_buffer.get(), 0, block_size);
 
-        first_block_mr = std::move(
-            make_unique<memory_region>(first_block_buffer.get(), block_size));
+        first_block_mr =
+            make_unique<memory_region>(first_block_buffer.get(), block_size);
     }
 }
 group::~group() {
@@ -365,9 +365,10 @@ void group::post_recv(block_transfer transfer) {
               "posted_receive_buffer");
 }
 void group::connect(size_t neighbor) {
-    queue_pairs.emplace(neighbor, members[neighbor]);
+    queue_pairs.emplace(neighbor, queue_pair(members[neighbor]));
 
-    auto it =  rfb_queue_pairs.emplace(neighbor, members[neighbor]).first;
+    auto it = rfb_queue_pairs.emplace(neighbor,
+									  queue_pair(members[neighbor])).first;
     it->second.post_empty_recv(
         form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK));
 }
@@ -831,10 +832,10 @@ optional<size_t> binomial_group::get_intravertex_block(
         return boost::none;
     }
 
-    uint32_t target = vertex;
-    if(flips % 2 == 0) {
-        target += (1 << log2_num_members) - 1;
-    }
+    // uint32_t target = vertex;
+    // if(flips % 2 == 0) {
+    //     target += (1 << log2_num_members) - 1;
+    // }
 
     size_t prev_receive_block_step = step - 1;
     if(flips != total_flips(step - 1)) {
