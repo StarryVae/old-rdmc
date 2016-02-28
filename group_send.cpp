@@ -29,9 +29,6 @@ group::group(uint16_t _group_number, size_t _block_size,
             make_unique<memory_region>(first_block_buffer.get(), block_size);
     }
 }
-group::~group() {
-    // TODO: free all other used resources.
-}
 void group::receive_block(uint32_t send_imm) {
     unique_lock<mutex> lock(monitor);
 
