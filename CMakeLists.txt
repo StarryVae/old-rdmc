@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8)
 
 PROJECT(verbs-mcast CXX)
-SET(CMAKE_CXX_FLAGS "-std=c++1y -Wall -O3 -ggdb")
+SET(CMAKE_CXX_FLAGS "-std=c++14 -Wall -O3 -ggdb")
 
 ADD_LIBRARY(rdmc rdmc.cpp util.cpp experiment.cpp group_send.cpp verbs_helper.cpp connection.cpp)
 TARGET_LINK_LIBRARIES(rdmc rdmacm ibverbs boost_system rt pthread)
