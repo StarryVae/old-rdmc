@@ -32,7 +32,18 @@
 #include <unistd.h>
 #include <vector>
 
+extern "C" {
+#include <infiniband/verbs.h>
+}
+
 using namespace std;
+using namespace rdma;
+
+namespace rdma {
+namespace impl {
+extern ibv_cq* verbs_get_cq();
+}
+}
 
 namespace rdmc {
 uint32_t node_rank;
@@ -78,16 +89,22 @@ static void main_loop() {
     unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
 
     while(true) {
-        int num_completions = poll_for_completions(
-            max_work_completions, work_completions.get(), shutdown_flag);
+		int num_completions = 0;
+		while(!shutdown_flag && num_completions == 0) {
+            num_completions = ibv_poll_cq(::rdma::impl::verbs_get_cq(),
+										  max_work_completions,
+										  work_completions.get());
+        }
 
         if(shutdown_flag) {
             groups.clear();
-            verbs_destroy();
+			::rdma::impl::verbs_destroy();
             exit(0);
         }
 
-        assert(num_completions > 0);  // Negative indicates an IBV error.
+        if(num_completions < 0) {  // Negative indicates an IBV error.
+			assert(false);
+        }
 
         for(int i = 0; i < num_completions; i++) {
             ibv_wc& wc = work_completions[i];
@@ -171,7 +188,7 @@ void initialize(const vector<string>& addresses, uint32_t _node_rank) {
     init_environment();
     TRACE("env initialized");
 
-    assert(verbs_initialize(addresses, node_rank));
+    assert(::rdma::impl::verbs_initialize(addresses, node_rank));
     TRACE("verbs initialized");
 
     thread t(main_loop);
@@ -261,8 +278,8 @@ barrier_group::barrier_group(vector<uint32_t> members) {
         qps.emplace(target, queue_pair(members[target]));
     }
 
-    auto remote_mrs =
-        verbs_exchange_memory_regions(members, node_rank, *steps_mr.get());
+    auto remote_mrs = ::rdma::impl::verbs_exchange_memory_regions(
+        members, node_rank, *steps_mr.get());
     for(unsigned int m = 0; m < total_steps; m++) {
         auto target = (member_index + (1 << m)) % group_size;
 

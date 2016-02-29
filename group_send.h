@@ -31,11 +31,11 @@ private:
 
     std::mutex monitor;
 
-    unique_ptr<memory_region> first_block_mr;
+    unique_ptr<rdma::memory_region> first_block_mr;
     optional<size_t> first_block_number;
     unique_ptr<char[]> first_block_buffer;
 
-    std::shared_ptr<memory_region> mr;
+    std::shared_ptr<rdma::memory_region> mr;
     size_t mr_offset;
     size_t message_size;
     size_t incoming_block;
@@ -62,8 +62,8 @@ protected:
     size_t num_blocks;
 	
     // maps from member_indices to the queue pairs
-    map<size_t, queue_pair> queue_pairs;
-    map<size_t, queue_pair> rfb_queue_pairs;
+    map<size_t, rdma::queue_pair> queue_pairs;
+    map<size_t, rdma::queue_pair> rfb_queue_pairs;
 
     struct block_transfer {
         uint32_t target;
@@ -87,9 +87,9 @@ public:
     void receive_block(uint32_t send_imm);
     void receive_ready_for_block(uint32_t step, uint32_t sender);
     void complete_block_send();
-    
-    void send_message(std::shared_ptr<memory_region> message_mr, size_t offset,
-                      size_t length);
+
+    void send_message(std::shared_ptr<rdma::memory_region> message_mr,
+                      size_t offset, size_t length);
 
     // This function is necessary because we can't issue a virtual function call
     // from a constructor, but we need to perform them in order to know which

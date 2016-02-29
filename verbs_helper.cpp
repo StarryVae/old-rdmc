@@ -16,8 +16,13 @@
 #include <unistd.h>
 #include <vector>
 
+extern "C" {
+#include <infiniband/verbs.h>
+}
+
 using namespace std;
 
+namespace rdma{
 const uint32_t TCP_PORT = 19875;
 
 struct config_t {
@@ -119,6 +124,7 @@ static int modify_qp_to_rts(struct ibv_qp *qp) {
     return rc;
 }
 
+namespace impl {
 void verbs_destroy() {
     if(verbs_resources.cq && ibv_destroy_cq(verbs_resources.cq)) {
         fprintf(stderr, "failed to destroy CQ\n");
@@ -334,6 +340,7 @@ resources_create_exit:
         // }
     }
     return false;
+}
 }
 memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
     int mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
@@ -569,43 +576,44 @@ bool queue_pair::post_write(const memory_region &mr, size_t offset,
     return true;
 }
 
-int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {
-    while(true) {
-        int poll_result = ibv_poll_cq(verbs_resources.cq, num, wcs);
-        if(poll_result != 0 || shutdown_flag) {
-            return poll_result;
-        }
-    }
+// int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {
+//     while(true) {
+//         int poll_result = ibv_poll_cq(verbs_resources.cq, num, wcs);
+//         if(poll_result != 0 || shutdown_flag) {
+//             return poll_result;
+//         }
+//     }
 
-    // if(poll_result < 0) {
-    //     /* poll CQ failed */
-    //     fprintf(stderr, "poll CQ failed\n");
-    // } else {
-    //     return
-    //     /* CQE found */
-    //     fprintf(stdout, "completion was found in CQ with status 0x%x\n",
-    //             wc.status);
-    //     /* check the completion status (here we don't care about the
-    //     completion
-    //      * opcode */
-    //     if(wc.status != IBV_WC_SUCCESS) {
-    //         fprintf(
-    //             stderr,
-    //             "got bad completion with status: 0x%x, vendor syndrome:
-    //             0x%x\n",
-    //             wc.status, wc.vendor_err);
-    //     }
-    // }
-}
+//     // if(poll_result < 0) {
+//     //     /* poll CQ failed */
+//     //     fprintf(stderr, "poll CQ failed\n");
+//     // } else {
+//     //     return
+//     //     /* CQE found */
+//     //     fprintf(stdout, "completion was found in CQ with status 0x%x\n",
+//     //             wc.status);
+//     //     /* check the completion status (here we don't care about the
+//     //     completion
+//     //      * opcode */
+//     //     if(wc.status != IBV_WC_SUCCESS) {
+//     //         fprintf(
+//     //             stderr,
+//     //             "got bad completion with status: 0x%x, vendor syndrome:
+//     //             0x%x\n",
+//     //             wc.status, wc.vendor_err);
+//     //     }
+//     // }
+// }
+namespace impl {
 map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     const vector<uint32_t> &members, uint32_t node_rank,
     const memory_region &mr) {
     map<uint32_t, remote_memory_region> remote_mrs;
     for(uint32_t m : members) {
-		if(m == node_rank){
-			continue;
-		}
-		
+        if(m == node_rank) {
+            continue;
+        }
+
         auto it = sockets.find(m);
         if(it == sockets.end()) {
             throw rdma::connection_broken();
@@ -629,4 +637,7 @@ map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
         remote_mrs.emplace(it->first, remote_memory_region(buffer, size, rkey));
     }
     return remote_mrs;
+}
+ibv_cq* verbs_get_cq() { return verbs_resources.cq; }
+}
 }

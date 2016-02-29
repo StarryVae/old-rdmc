@@ -25,7 +25,7 @@ enum send_algorithm {
 };
 
 struct receive_destination {
-    std::shared_ptr<memory_region> mr;
+    std::shared_ptr<rdma::memory_region> mr;
     size_t offset;
 };
 
@@ -46,26 +46,26 @@ void create_group(uint16_t group_number, std::vector<uint32_t> members,
                   failure_callback_t failure_callback);
 void destroy_group(uint16_t group_number);
 
-void send(uint16_t group_number, std::shared_ptr<memory_region> mr,
+void send(uint16_t group_number, std::shared_ptr<rdma::memory_region> mr,
           size_t offset, size_t length);
 
 class barrier_group {
     // Queue Pairs and associated remote memory regions used for performing a
     // barrier.
-	std::vector<queue_pair> queue_pairs;
-	std::vector<remote_memory_region> remote_memory_regions;
+	std::vector<rdma::queue_pair> queue_pairs;
+	std::vector<rdma::remote_memory_region> remote_memory_regions;
 
     // Additional queue pairs which will handle incoming writes (but which this
     // node does not need to interact with directly).
-	std::vector<queue_pair> extra_queue_pairs;
+	std::vector<rdma::queue_pair> extra_queue_pairs;
 
     // RDMA memory region used for doing the barrier
 	std::array<volatile int64_t, 32> steps;
-	std::unique_ptr<memory_region> steps_mr;
+	std::unique_ptr<rdma::memory_region> steps_mr;
 
     // Current barrier number, and a memory region to issue writes from.
     volatile int64_t number = -1;
-	std::unique_ptr<memory_region> number_mr;
+	std::unique_ptr<rdma::memory_region> number_mr;
 
     // Number of steps per barrier.
     unsigned int total_steps;

@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 
 using namespace std;
+using namespace rdma;
 using namespace rdmc;
 
 group::group(uint16_t _group_number, size_t _block_size,
@@ -20,8 +21,8 @@ group::group(uint16_t _group_number, size_t _block_size,
         first_block_buffer = unique_ptr<char[]>(new char[block_size]);
         memset(first_block_buffer.get(), 0, block_size);
 
-        first_block_mr =
-            make_unique<memory_region>(first_block_buffer.get(), block_size);
+        first_block_mr = make_unique<memory_region>(
+            first_block_buffer.get(), block_size);
     }
 }
 void group::receive_block(uint32_t send_imm) {

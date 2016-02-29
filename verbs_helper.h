@@ -11,17 +11,12 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-#include <infiniband/verbs.h>
-}
+struct ibv_mr;
+struct ibv_qp;
 
 namespace rdma{
-	class exception{};
-	class connection_broken{};
-};
-
-
-class completion_queue {};
+class exception {};
+class connection_broken {};
 
 class memory_region {
     std::unique_ptr<ibv_mr, std::function<void(ibv_mr*)>> mr;
@@ -66,11 +61,12 @@ public:
                     bool send_inline = false);
 };
 
+namespace impl {
 bool verbs_initialize(const std::vector<std::string>& node_addresses,
-					  uint32_t node_rank);
+                      uint32_t node_rank);
 void verbs_destroy();
-int poll_for_completions(int num, ibv_wc* wcs,
-                         std::atomic<bool>& shutdown_flag);
+// int poll_for_completions(int num, ibv_wc* wcs,
+//                          std::atomic<bool>& shutdown_flag);
 
 // This function exchanges memory regions with all other connected nodes which
 // enables us to do one-sided RDMA operations between them. Due to its nature,
@@ -79,5 +75,6 @@ int poll_for_completions(int num, ibv_wc* wcs,
 std::map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     const std::vector<uint32_t>& members, uint32_t node_rank,
     const memory_region& mr);
-
+}
+}
 #endif /* VERBS_HELPER_H */
