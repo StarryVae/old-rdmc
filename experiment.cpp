@@ -495,46 +495,49 @@ void compare_send_types() {
     puts("=         Compare Send Types - Bandwidth (Gb/s)         =");
     puts("=========================================================");
     puts(
-        "Group Size,Binomial Pipeline (256 MB),Chain Send (256 MB),Sequential "
-        "Send (256 MB),"
-        "Binomial Pipeline (64 MB),Chain Send (64 MB),Sequential Send (64 MB),"
-        "Binomial Pipeline (8 MB),Chain Send (8 MB),Sequential Send (8 MB),");
+        "Group Size,"
+		"Binomial Pipeline (256 MB),Chain Send (256 MB),Sequential Send (256 MB),Tree Send (256 MB),"
+        "Binomial Pipeline (64 MB),Chain Send (64 MB),Sequential Send (64 MB),Tree Send (64 MB),"
+        "Binomial Pipeline (8 MB),Chain Send (8 MB),Sequential Send (8 MB),Tree Send (8 MB),");
     fflush(stdout);
 
     const size_t block_size = 1 << 20;
-
+	const size_t iterations = 64;
     for(int gsize = num_nodes; gsize >= 2; --gsize) {
-        auto bp8 = measure_multicast(8 << 20, block_size, gsize, 64,
+        auto bp8 = measure_multicast(8 << 20, block_size, gsize, iterations,
                                      rdmc::BINOMIAL_SEND);
-        auto bp64 = measure_multicast(64 << 20, block_size, gsize, 64,
+        auto bp64 = measure_multicast(64 << 20, block_size, gsize, iterations,
                                       rdmc::BINOMIAL_SEND);
-        auto bp256 = measure_multicast(256 << 20, block_size, gsize, 64,
+        auto bp256 = measure_multicast(256 << 20, block_size, gsize, iterations,
                                        rdmc::BINOMIAL_SEND);
-        auto cs8 =
-            measure_multicast(8 << 20, block_size, gsize, 64, rdmc::CHAIN_SEND);
-        auto cs64 = measure_multicast(64 << 20, block_size, gsize, 64,
+        auto cs8 = measure_multicast(8 << 20, block_size, gsize, iterations,
+                                     rdmc::CHAIN_SEND);
+        auto cs64 = measure_multicast(64 << 20, block_size, gsize, iterations,
                                       rdmc::CHAIN_SEND);
-        auto cs256 = measure_multicast(256 << 20, block_size, gsize, 64,
+        auto cs256 = measure_multicast(256 << 20, block_size, gsize, iterations,
                                        rdmc::CHAIN_SEND);
-        auto ss8 = measure_multicast(8 << 20, block_size, gsize, 64,
+        auto ss8 = measure_multicast(8 << 20, block_size, gsize, iterations,
+                                     rdmc::SEQUENTIAL_SEND);
+        auto ss64 = measure_multicast(64 << 20, block_size, gsize, iterations,
                                       rdmc::SEQUENTIAL_SEND);
-        auto ss64 = measure_multicast(64 << 20, block_size, gsize, 64,
-                                      rdmc::SEQUENTIAL_SEND);
-        auto ss256 = measure_multicast(256 << 20, block_size, gsize, 64,
+        auto ss256 = measure_multicast(256 << 20, block_size, gsize, iterations,
                                        rdmc::SEQUENTIAL_SEND);
-        // auto ts64 =
-        //     measure_multicast(64 << 20, block_size, gsize, 8, rdmc::TREE_SEND);
-        // auto ts256 =
-        //     measure_multicast(256 << 20, block_size, gsize, 8, rdmc::TREE_SEND);
+        auto ts8 = measure_multicast(8 << 20, block_size, gsize, iterations,
+                                     rdmc::TREE_SEND);
+        auto ts64 = measure_multicast(64 << 20, block_size, gsize, iterations,
+                                      rdmc::TREE_SEND);
+        auto ts256 = measure_multicast(256 << 20, block_size, gsize, iterations,
+                                       rdmc::TREE_SEND);
         printf(
             "%d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, "
-            "%f, %f, %f\n", gsize,
-            bp256.bandwidth.mean, cs256.bandwidth.mean, ss256.bandwidth.mean,
-			bp64.bandwidth.mean,  cs64.bandwidth.mean,  ss64.bandwidth.mean,
-			bp8.bandwidth.mean,   cs8.bandwidth.mean,   ss8.bandwidth.mean,
-            bp256.bandwidth.stddev,cs256.bandwidth.stddev,ss256.bandwidth.stddev,
-			bp64.bandwidth.stddev, cs64.bandwidth.stddev, ss64.bandwidth.stddev,
-			bp8.bandwidth.stddev,  cs8.bandwidth.stddev,  ss8.bandwidth.stddev);
+            "%f, %f, %f, %f, %f, %f, %f, %f, %f\n",
+            gsize,
+			bp256.bandwidth.mean, cs256.bandwidth.mean, ss256.bandwidth.mean, ts256.bandwidth.mean,
+            bp64.bandwidth.mean, cs64.bandwidth.mean, ss64.bandwidth.mean, ts64.bandwidth.mean,
+            bp8.bandwidth.mean, cs8.bandwidth.mean, ss8.bandwidth.mean, ts8.bandwidth.mean,
+            bp256.bandwidth.stddev, cs256.bandwidth.stddev, ss256.bandwidth.stddev, ts256.bandwidth.stddev, 
+            bp64.bandwidth.stddev, cs64.bandwidth.stddev, ss64.bandwidth.stddev, ts64.bandwidth.stddev,
+			bp8.bandwidth.stddev, cs8.bandwidth.stddev, ss8.bandwidth.stddev, ts8.bandwidth.stddev);
 
             // ss256.bandwidth.mean, 0.0f /*ts256.bandwidth.mean*/,
             // bp64.bandwidth.mean, cs64.bandwidth.mean, ss64.bandwidth.mean,
@@ -658,7 +661,8 @@ void concurrent_bandwidth_group_size() {
 // }
 void large_send() {
     LOG_EVENT(-1, -1, -1, "start_large_send");
-    auto s = measure_multicast(16 << 20, 1 << 20, num_nodes, 16);
+    auto s =
+        measure_multicast(16 << 20, 1 << 20, num_nodes, 16, rdmc::TREE_SEND);
 //    flush_events();
     printf("Bandwidth = %f(%f) Gb/s\n", s.bandwidth.mean, s.bandwidth.stddev);
     printf("Latency = %f(%f) ms\n", s.time.mean, s.time.stddev);
@@ -887,13 +891,27 @@ int main(int argc, char *argv[]) {
 	vector<uint32_t> members;
     for(uint32_t i = 0; i < num_nodes; i++) members.push_back(i);
     universal_barrier_group = make_unique<rdmc::barrier_group>(members);
-	TRACE("Finished initializing.");
+
+    universal_barrier_group->barrier_wait();
+    uint64_t t1 = get_time();
+    universal_barrier_group->barrier_wait();
+    uint64_t t2 = get_time();
+    reset_epoch();
+    universal_barrier_group->barrier_wait();
+    uint64_t t3 = get_time();
+
+    printf("Synchronized clocks.\nTotal possible variation = %5.3f us\n"
+		   "Max possible variation from local = %5.3f us\n",
+		   (t3 - t1) * 1e-3f, max(t2 - t1, t3 - t2) * 1e-3f);
+    fflush(stdout);
+
+    TRACE("Finished initializing.");
 
     printf("Experiment Name: %s\n", argv[1]);
     if(argc <= 1 || strcmp(argv[1], "custom") == 0) {
         for(int i = 0; i < 3; i++) {
 			//universal_barrier_group->barrier_wait();
-			concurrent_send();
+			large_send();
         }
 		//        flush_events();
         rdmc::shutdown();

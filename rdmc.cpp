@@ -184,10 +184,6 @@ void initialize(const map<uint32_t, string>& addresses, uint32_t _node_rank) {
     node_rank = _node_rank;
 	
 	TRACE("starting initialize");
-
-    init_environment();
-    TRACE("env initialized");
-
     assert(::rdma::impl::verbs_initialize(addresses, node_rank));
     TRACE("verbs initialized");
 

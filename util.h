@@ -29,10 +29,9 @@ inline uint64_t get_time() {
 }
 double compute_data_rate(size_t numBytes, uint64_t sTime, uint64_t eTime);
 void put_flush(const char *str);
-void init_environment();
+void reset_epoch();
 void query_addresses(std::map<uint32_t, std::string> &addresses,
                      uint32_t &node_rank);
-void do_barrier();
 
 double compute_mean(std::vector<double> v);
 double compute_stddev(std::vector<double> v);

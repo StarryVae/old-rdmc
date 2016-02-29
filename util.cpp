@@ -98,11 +98,12 @@ void query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank) {
 	}
 }
 
-void init_environment() {
+void reset_epoch() {
+	LOG_EVENT(-1,-1,-1, "begin_epoch_reset");
 	epoch_start = get_time();
+	LOG_EVENT(-1,-1,-1, "end_epoch_reset");
 }
 
-void do_barrier() {}
 double compute_mean(std::vector<double> v) {
     double sum = std::accumulate(v.begin(), v.end(), 0.0);
     return sum / v.size();

@@ -456,7 +456,18 @@ optional<group::block_transfer> sequential_group::get_first_block() const {
 }
 
 void tree_group::form_connections() {
-	assert(false); // TODO
+	for(uint32_t i = 0; i < 32; i++){
+		if(member_index != 0 && (2ull << i) > member_index){
+            connect(member_index - (1 << i));
+			break;
+        }
+    }
+
+    for(uint32_t i = 0; i < 32 && num_members - member_index > (1u << i); i++) {
+        if((1u << i) > member_index) {
+			connect(member_index + (1 << i));
+		}
+	}
 }
 size_t tree_group::get_total_steps() const {
     unsigned int log2_num_members = ceil(log2(num_members));
@@ -464,19 +475,37 @@ size_t tree_group::get_total_steps() const {
 }
 optional<group::block_transfer> tree_group::get_outgoing_transfer(
     size_t step) const {
-
-	assert(false); //TODO
-	return boost::none;
+	
+	size_t stage = step / num_blocks;
+    if(step >= get_total_steps() || (1u << stage) <= member_index ||
+       (1u << stage) >= num_members - member_index) {
+        return boost::none;
+	}else{
+        return block_transfer{member_index + (1u << stage),
+                              step - stage * num_blocks};
+    }
 }
 optional<group::block_transfer> tree_group::get_incoming_transfer(
     size_t step) const {
 
-	assert(false); // TODO
-	return boost::none;
+	size_t stage = step / num_blocks;
+    if(step < get_total_steps() && (1u << stage) <= member_index &&
+       member_index < (2u << stage)) {
+        return block_transfer{member_index - (1u << stage),
+                              step - stage * num_blocks};
+    }else{
+		return boost::none;
+	}
 }
 optional<group::block_transfer> tree_group::get_first_block() const {
-    if(member_index == 0) return boost::none;
-    return block_transfer{(uint32_t)((member_index + 1) / 2 - 1), 0};
+    if(member_index == 0)
+		return boost::none;
+	
+	for(uint32_t i = 0; i < 32; i++){
+		if((2ull << i) > member_index)
+			return block_transfer{member_index - (1 << i), 0};
+	}
+	assert(false);
 }
 binomial_group::binomial_group(uint16_t group_number, size_t block_size,
                                vector<uint32_t> members, uint32_t member_index,
