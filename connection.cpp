@@ -96,8 +96,6 @@ socket connection_listener::accept() {
     int sock = ::accept(*fd, NULL, 0);
 	if(sock < 0) throw connection_failure();
 
-	throw string("ABC");
-	
     return socket(sock);
 }
 }
