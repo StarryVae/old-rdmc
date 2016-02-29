@@ -411,9 +411,8 @@ queue_pair::queue_pair(size_t remote_index) {
     // fprintf(stdout, "Local QP number  = 0x%x\n", qp->qp_num);
     // fprintf(stdout, "Local LID        = 0x%x\n", verbs_resources.port_attr.lid);
 
-    if(!sock.exchange(local_con_data, remote_con_data)){
+    if(!sock.exchange(local_con_data, remote_con_data))
 		assert(false);
-	}
 
     bool success =
         !modify_qp_to_init(qp.get(), local_config.ib_port) &&
@@ -599,28 +598,35 @@ int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {
     // }
 }
 map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
-    const memory_region& mr) {
+    const vector<uint32_t> &members, uint32_t node_rank,
+    const memory_region &mr) {
     map<uint32_t, remote_memory_region> remote_mrs;
-	for(auto it = sockets.begin(); it != sockets.end();){
-		uintptr_t buffer;
-		size_t size;
-		uint32_t rkey;
-
-		bool still_connected =
-			it->second.exchange((uintptr_t)mr.buffer, buffer) &&
-			it->second.exchange((size_t)mr.size, size) &&
-			it->second.exchange((uint32_t)mr.get_rkey(), rkey);
-
-		if(still_connected){
-			remote_mrs.emplace(it->first,
-							   remote_memory_region(buffer, size, rkey));
-
-			++it;
-		}else{
-			fprintf(stderr, "WARNING: lost connection to node %u\n",
-					(unsigned int)it->first);
-			it = sockets.erase(it);
+    for(uint32_t m : members) {
+		if(m == node_rank){
+			continue;
 		}
-	}
-	return remote_mrs;
+		
+        auto it = sockets.find(m);
+        if(it == sockets.end()) {
+            throw rdma::connection_broken();
+        }
+
+        uintptr_t buffer;
+        size_t size;
+        uint32_t rkey;
+
+        bool still_connected =
+            it->second.exchange((uintptr_t)mr.buffer, buffer) &&
+            it->second.exchange((size_t)mr.size, size) &&
+            it->second.exchange((uint32_t)mr.get_rkey(), rkey);
+
+        if(!still_connected) {
+            fprintf(stderr, "WARNING: lost connection to node %u\n",
+                    (unsigned int)it->first);
+            throw rdma::connection_broken();
+        }
+
+        remote_mrs.emplace(it->first, remote_memory_region(buffer, size, rkey));
+    }
+    return remote_mrs;
 }

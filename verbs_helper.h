@@ -15,6 +15,12 @@ extern "C" {
 #include <infiniband/verbs.h>
 }
 
+namespace rdma{
+	class exception{};
+	class connection_broken{};
+};
+
+
 class completion_queue {};
 
 class memory_region {
@@ -71,6 +77,7 @@ int poll_for_completions(int num, ibv_wc* wcs,
 // the function requires that it is called simultaneously on all nodes and that
 // only one execution is active at any time.
 std::map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
+    const std::vector<uint32_t>& members, uint32_t node_rank,
     const memory_region& mr);
 
 #endif /* VERBS_HELPER_H */

@@ -44,32 +44,32 @@ mutex groups_lock;
 
 // Barriers can't support nodes coming and leaving so we just use the initial
 // group membership from when RDMC was initialized...
-uint32_t barrier_group_size;
+// uint32_t barrier_group_size;
 
-struct {
-    // Queue Pairs and associated remote memory regions used for performing a
-    // barrier.
-    vector<queue_pair> queue_pairs;
-    vector<remote_memory_region> remote_memory_regions;
+// struct {
+//     // Queue Pairs and associated remote memory regions used for performing a
+//     // barrier.
+//     vector<queue_pair> queue_pairs;
+//     vector<remote_memory_region> remote_memory_regions;
 
-    // Additional queue pairs which will handle incoming writes (but which this
-    // node does not need to interact with directly).
-    vector<queue_pair> extra_queue_pairs;
+//     // Additional queue pairs which will handle incoming writes (but which this
+//     // node does not need to interact with directly).
+//     vector<queue_pair> extra_queue_pairs;
 
-	// RDMA memory region used for doing the barrier
-    array<volatile int64_t, 32> steps;
-    unique_ptr<memory_region> steps_mr;
+// 	// RDMA memory region used for doing the barrier
+//     array<volatile int64_t, 32> steps;
+//     unique_ptr<memory_region> steps_mr;
 
-	// Current barrier number, and a memory region to issue writes from.
-    volatile int64_t number = -1;
-    unique_ptr<memory_region> number_mr;
+// 	// Current barrier number, and a memory region to issue writes from.
+//     volatile int64_t number = -1;
+//     unique_ptr<memory_region> number_mr;
 
-	// Number of steps per barrier.
-    unsigned int total_steps;
+// 	// Number of steps per barrier.
+//     unsigned int total_steps;
 
-	// Lock to ensure that only one barrier is in flight at a time.
-    mutex lock;
-} barrier_state;
+// 	// Lock to ensure that only one barrier is in flight at a time.
+//     mutex lock;
+// } barrier_state;
 
 static void main_loop() {
 	TRACE("Spawned main loop");
@@ -163,54 +163,8 @@ static void main_loop() {
     }
 }
 
-static void init_barriers() {
-    barrier_state.total_steps = ceil(log2(barrier_group_size));
-    for(unsigned int m = 0; m < barrier_state.total_steps; m++)
-        barrier_state.steps[m] = -1;
-    barrier_state.steps_mr =
-        make_unique<memory_region>((char*)&barrier_state.steps[0],
-                                   barrier_state.total_steps * sizeof(int64_t));
-    barrier_state.number_mr = make_unique<memory_region>(
-        (char*)&barrier_state.number, sizeof(barrier_state.number));
-
-    set<uint32_t> targets;
-    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
-        auto target = (node_rank + (1 << m)) % barrier_group_size;
-        auto target2 =
-            (barrier_group_size * (1 << m) + node_rank - (1 << m)) %
-            barrier_group_size;
-        targets.insert(target);
-        targets.insert(target2);
-    }
-
-    map<uint32_t, queue_pair> qps;
-    for(auto target : targets) {
-        qps.emplace(target, queue_pair(target));
-    }
-
-    auto remote_mrs =
-        verbs_exchange_memory_regions(*barrier_state.steps_mr.get());
-    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
-        auto target = (node_rank + (1 << m)) % barrier_group_size;
-
-        barrier_state.remote_memory_regions.push_back(
-            remote_mrs.find(target)->second);
-
-        auto qp_it = qps.find(target);
-        barrier_state.queue_pairs.push_back(std::move(qp_it->second));
-		qps.erase(qp_it);
-    }
-
-	for(auto it = qps.begin(); it != qps.end(); it++){
-        barrier_state.extra_queue_pairs.push_back(std::move(it->second));
-		qps.erase(it);
-	}
-}
-
 void initialize(const vector<string>& addresses, uint32_t _node_rank) {
 	node_rank = _node_rank;
-	node_rank = node_rank;
-	barrier_group_size = addresses.size();
 	
 	TRACE("starting initialize");
 
@@ -220,9 +174,6 @@ void initialize(const vector<string>& addresses, uint32_t _node_rank) {
     assert(verbs_initialize(addresses, node_rank));
     TRACE("verbs initialized");
 
-	init_barriers();
-	TRACE("barriers initialized");
-	
     thread t(main_loop);
     t.detach();
 }
@@ -283,22 +234,68 @@ void send(uint16_t group_number, shared_ptr<memory_region> mr, size_t offset,
     LOG_EVENT(group_number, -1, -1, "preparing_to_send_message");
     g->send_message(mr, offset, length);
 }
-void barrier() {
+
+barrier_group::barrier_group(vector<uint32_t> members) {
+	member_index = index_of(members, node_rank);
+	group_size = members.size();
+	
+    total_steps = ceil(log2(group_size));
+    for(unsigned int m = 0; m < total_steps; m++)
+        steps[m] = -1;
+
+    steps_mr = make_unique<memory_region>((char*)&steps[0],
+                                          total_steps * sizeof(int64_t));
+    number_mr = make_unique<memory_region>((char*)&number, sizeof(number));
+
+    set<uint32_t> targets;
+    for(unsigned int m = 0; m < total_steps; m++) {
+        auto target = (member_index + (1 << m)) % group_size;
+        auto target2 =
+            (group_size * (1 << m) + member_index - (1 << m)) % group_size;
+        targets.insert(target);
+        targets.insert(target2);
+    }
+
+    map<uint32_t, queue_pair> qps;
+    for(auto target : targets) {
+        qps.emplace(target, queue_pair(members[target]));
+    }
+
+    auto remote_mrs =
+        verbs_exchange_memory_regions(members, node_rank, *steps_mr.get());
+    for(unsigned int m = 0; m < total_steps; m++) {
+        auto target = (member_index + (1 << m)) % group_size;
+
+        remote_memory_regions.push_back(remote_mrs.find(target)->second);
+
+        auto qp_it = qps.find(target);
+        queue_pairs.push_back(std::move(qp_it->second));
+        qps.erase(qp_it);
+    }
+
+    for(auto it = qps.begin(); it != qps.end(); it++) {
+        extra_queue_pairs.push_back(std::move(it->second));
+        qps.erase(it);
+    }
+}
+void barrier_group::barrier_wait() {
     // See:
     // http://mvapich.cse.ohio-state.edu/static/media/publications/abstract/kinis-euro03.pdf
 
-    unique_lock<mutex> lock(barrier_state.lock);
+    unique_lock<mutex> l(lock);
     LOG_EVENT(-1, -1, -1, "start_barrier");
-    barrier_state.number++;
+    number++;
 
-    for(unsigned int m = 0; m < barrier_state.total_steps; m++) {
-        assert(barrier_state.queue_pairs[m].post_write(
-            *barrier_state.number_mr.get(), 0, 8,
-            form_tag(0, (node_rank + (1 << m)) % barrier_group_size,
-                     MessageType::BARRIER),
-            barrier_state.remote_memory_regions[m], m * 8, false, true));
+    for(unsigned int m = 0; m < total_steps; m++) {
+        if(!queue_pairs[m].post_write(
+               *number_mr.get(), 0, 8,
+               form_tag(0, (node_rank + (1 << m)) % group_size,
+                        MessageType::BARRIER),
+               remote_memory_regions[m], m * 8, false, true)) {
+            throw connection_broken();
+        }
 
-        while(barrier_state.steps[m] < barrier_state.number)
+        while(steps[m] < number)
 			/* do nothing*/;
     }
     LOG_EVENT(-1, -1, -1, "end_barrier");

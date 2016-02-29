@@ -7,11 +7,15 @@
 #include <boost/optional.hpp>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <string>
 #include <vector>
 
 namespace rdmc {
+
+class exception {};
+class connection_broken : public exception {};
 
 enum send_algorithm {
     BINOMIAL_SEND = 1,
@@ -45,7 +49,37 @@ void destroy_group(uint16_t group_number);
 void send(uint16_t group_number, std::shared_ptr<memory_region> mr,
           size_t offset, size_t length);
 
-void barrier();
+class barrier_group {
+    // Queue Pairs and associated remote memory regions used for performing a
+    // barrier.
+	std::vector<queue_pair> queue_pairs;
+	std::vector<remote_memory_region> remote_memory_regions;
+
+    // Additional queue pairs which will handle incoming writes (but which this
+    // node does not need to interact with directly).
+	std::vector<queue_pair> extra_queue_pairs;
+
+    // RDMA memory region used for doing the barrier
+	std::array<volatile int64_t, 32> steps;
+	std::unique_ptr<memory_region> steps_mr;
+
+    // Current barrier number, and a memory region to issue writes from.
+    volatile int64_t number = -1;
+	std::unique_ptr<memory_region> number_mr;
+
+    // Number of steps per barrier.
+    unsigned int total_steps;
+
+    // Lock to ensure that only one barrier is in flight at a time.
+	std::mutex lock;
+
+	// Index of this node in the list of members
+	uint32_t member_index;
+	uint32_t group_size;
+ public:
+	barrier_group(std::vector<uint32_t> members);
+	void barrier_wait();
+};
 };
 
 #endif /* RDMC_H */
