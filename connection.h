@@ -32,15 +32,16 @@ namespace tcp{
         bool read(char* buffer, size_t size);
         bool write(char* buffer, size_t size);
 
-        template<class T>
-			bool exchange(T local, T& remote){
+        template <class T>
+        bool exchange(T local, T& remote) {
             static_assert(std::is_pod<T>::value,
                           "Can't send non-pod type over TCP");
 
-			if(sock < 0){
-				fprintf(stderr, "WARNING: Attempted to write to closed socket\n");
-				return false;
-			}
+            if(sock < 0) {
+                fprintf(stderr,
+                        "WARNING: Attempted to write to closed socket\n");
+                return false;
+            }
 
             return write((char*)&local, sizeof(T)) &&
                    read((char*)&remote, sizeof(T));
