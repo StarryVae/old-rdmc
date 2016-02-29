@@ -6,10 +6,11 @@ SET(CMAKE_CXX_FLAGS "-std=c++14 -Wall -O3 -ggdb")
 ADD_LIBRARY(rdmc rdmc.cpp util.cpp group_send.cpp verbs_helper.cpp connection.cpp)
 TARGET_LINK_LIBRARIES(rdmc rdmacm ibverbs boost_system rt pthread)
 
-if (SLURM_LIBRARY)
+find_library(SLURM_FOUND slurm)
+if (SLURM_FOUND)
   target_link_libraries(rdmc slurm)
   add_definitions(-DUSE_SLURM)
-endif (SLURM_LIBRARY)
+endif (SLURM_FOUND)
 
 ADD_EXECUTABLE(verbs-mcast experiment.cpp)
 TARGET_LINK_LIBRARIES(verbs-mcast rdmc)
