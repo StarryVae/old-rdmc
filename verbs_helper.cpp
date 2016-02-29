@@ -43,6 +43,9 @@ struct cm_con_data_t {
 // sockets for each connection
 static map<uint32_t, tcp::socket> sockets;
 
+// listener to detect new incoming connections
+unique_ptr<tcp::connection_listener> connection_listener;
+
 config_t local_config;
 
 // structure of system resources
@@ -137,7 +140,8 @@ void verbs_destroy() {
     }
 }
 
-bool verbs_initialize(const vector<string>& node_addresses, uint32_t node_rank) {
+bool verbs_initialize(const map<uint32_t, string> &node_addresses,
+                      uint32_t node_rank) {
     memset(&verbs_resources, 0, sizeof(verbs_resources));
 
     // config_vec.resize(num_nodes);
@@ -145,65 +149,25 @@ bool verbs_initialize(const vector<string>& node_addresses, uint32_t node_rank) 
     //     config_vec[i].ip_addr = node_addresses[i];
     // }
 
-	local_config.ip_addr = node_addresses[node_rank];
+	auto local_it = node_addresses.find(node_rank);
+	if(local_it == node_addresses.end()){
+		fprintf(stderr, "ERROR: address list for verbs_initialize doesn't"
+				"contain current node");
+		return false;
+	}
+	local_config.ip_addr = local_it->second;
+
+    connection_listener = make_unique<tcp::connection_listener>(TCP_PORT);
 	
     TRACE("Starting connection phase");
-    // try to connect to nodes greater than node_rank
-    for(uint32_t i = node_addresses.size() - 1; i > node_rank; --i) {
-		const string& ip_addr = node_addresses[i];
-		
-		try{
-			sockets[i] = tcp::socket(ip_addr, TCP_PORT);
-		}catch(tcp::exception){
-			fprintf(stderr, "WARNING: failed to node %u at %s:%d",
-					(unsigned int)i, ip_addr.c_str(), TCP_PORT);
-			continue;
-		}
-		
-		// Make sure that the connection works, and that we've connected to the
-		// right node.
-        uint32_t remote_rank = 0;
-		if(!sockets[i].exchange(node_rank, remote_rank)){
-			fprintf(stderr,
-					"WARNING: failed to exchange rank with node %u at %s:%d",
-					(unsigned int)i, ip_addr.c_str(), TCP_PORT);
-			sockets.erase(i);
-			continue;
-		}else if(remote_rank != i){
-			fprintf(stderr,
-					"WARNING: node at %s:%d replied with wrong rank (expected"
-					"%d but got %d)", ip_addr.c_str(), TCP_PORT, (unsigned int)i,
-					(unsigned int)remote_rank);
 
-			sockets.erase(i);
-			continue;			
+    // Connect to other nodes in group. Since map traversal is sorted, we don't
+    // have to worry about circular waits, so deadlock can't occur.
+    for(auto it = node_addresses.begin(); it != node_addresses.end(); it++) {
+		if(it->first != node_rank){
+			verbs_add_connection(it->first, it->second, node_rank);
 		}
     }
-
-    TRACE("starting listen phase");
-
-    // set up listen on the port
-    tcp::connection_listener listener(TCP_PORT);
-
-    // now accept connections
-    // make sure that the caller is correctly identified with its id!
-    for(int i = node_rank - 1; i >= 0; --i) {
-		try{
-			tcp::socket s = listener.accept();
-
-			uint32_t remote_rank = 0;
-			if(!s.exchange(node_rank, remote_rank)){
-				fprintf(stderr, "WARNING: failed to exchange rank with node");
-				continue;
-			}
-		
-			sockets[remote_rank] = std::move(s);
-		}catch(tcp::exception){
-			fprintf(stderr, "Got error while attempting to listing on port"); 
-			continue;
-		}
-    }
-
     TRACE("Done connecting");
 
     auto res = &verbs_resources;
@@ -283,41 +247,11 @@ bool verbs_initialize(const vector<string>& node_addresses, uint32_t node_rank) 
         goto resources_create_exit;
     }
 
-    /* create the Queue Pair */
-    // memset(&qp_init_attr, 0, sizeof(qp_init_attr));
-    // qp_init_attr.qp_type = IBV_QPT_RC;
-    // qp_init_attr.sq_sig_all = 1;
-    // qp_init_attr.send_cq = res->cq;
-    // qp_init_attr.recv_cq = res->cq;
-    // qp_init_attr.cap.max_send_wr = 1;
-    // qp_init_attr.cap.max_recv_wr = 1;
-    // qp_init_attr.cap.max_send_sge = 1;
-    // qp_init_attr.cap.max_recv_sge = 1;
-    // res->qp = ibv_create_qp(res->pd, &qp_init_attr);
-    // if(!res->qp) {
-    //     fprintf(stderr, "failed to create QP\n");
-    //     rc = 1;
-    //     goto resources_create_exit;
-    // }
-    // fprintf(stdout, "QP was created, QP number=0x%x\n", res->qp->qp_num);
     TRACE("verbs_initialize() - SUCCESS");
     return true;
 resources_create_exit:
     TRACE("verbs_initialize() - ERROR!!!!!!!!!!!!!!");
     if(rc) {
-        /* Error encountered, cleanup */
-        // if(res->qp) {
-        //     ibv_destroy_qp(res->qp);
-        //     res->qp = NULL;
-        // }
-        // if(res->mr) {
-        //     ibv_dereg_mr(res->mr);
-        //     res->mr = NULL;
-        // }
-        // if(res->buf) {
-        //     free(res->buf);
-        //     res->buf = NULL;
-        // }
         if(res->cq) {
             ibv_destroy_cq(res->cq);
             res->cq = NULL;
@@ -334,12 +268,51 @@ resources_create_exit:
             ibv_free_device_list(dev_list);
             dev_list = NULL;
         }
-        // if(res->sock >= 0) {
-        //     if(close(res->sock)) fprintf(stderr, "failed to close socket\n");
-        //     res->sock = -1;
-        // }
     }
     return false;
+}
+void verbs_add_connection(uint32_t index, const string &address,
+                          uint32_t node_rank) {
+    if(index < node_rank) {
+        try {
+            sockets[index] = tcp::socket(address, TCP_PORT);
+        } catch(tcp::exception) {
+            fprintf(stderr, "WARNING: failed to node %u at %s:%d",
+                    (unsigned int)index, address.c_str(), TCP_PORT);
+            return;
+        }
+
+        // Make sure that the connection works, and that we've connected to the
+        // right node.
+        uint32_t remote_rank = 0;
+        if(!sockets[index].exchange(node_rank, remote_rank)) {
+            fprintf(stderr,
+                    "WARNING: failed to exchange rank with node %u at %s:%d",
+                    (unsigned int)index, address.c_str(), TCP_PORT);
+            sockets.erase(index);
+        } else if(remote_rank != index) {
+            fprintf(stderr,
+                    "WARNING: node at %s:%d replied with wrong rank (expected"
+                    "%d but got %d)",
+                    address.c_str(), TCP_PORT, (unsigned int)index,
+                    (unsigned int)remote_rank);
+
+            sockets.erase(index);
+        }
+    } else if(index > node_rank) {
+        try {
+            tcp::socket s = connection_listener->accept();
+
+            uint32_t remote_rank = 0;
+            if(!s.exchange(node_rank, remote_rank)) {
+                fprintf(stderr, "WARNING: failed to exchange rank with node");
+            }else{
+				sockets[remote_rank] = std::move(s);
+			}
+        } catch(tcp::exception) {
+            fprintf(stderr, "Got error while attempting to listing on port");
+        }
+    }
 }
 }
 memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {

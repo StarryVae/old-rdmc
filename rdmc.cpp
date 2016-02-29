@@ -180,8 +180,8 @@ static void main_loop() {
     }
 }
 
-void initialize(const vector<string>& addresses, uint32_t _node_rank) {
-	node_rank = _node_rank;
+void initialize(const map<uint32_t, string>& addresses, uint32_t _node_rank) {
+    node_rank = _node_rank;
 	
 	TRACE("starting initialize");
 
@@ -193,6 +193,9 @@ void initialize(const vector<string>& addresses, uint32_t _node_rank) {
 
     thread t(main_loop);
     t.detach();
+}
+void add_address(uint32_t index, const string& address) {
+	::rdma::impl::verbs_add_connection(index, address, node_rank);
 }
 
 void create_group(uint16_t group_number, std::vector<uint32_t> members,

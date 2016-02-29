@@ -24,6 +24,7 @@
 #include <vector>
 
 using namespace std;
+using namespace rdma;
 
 template <class T>
 struct stat {
@@ -875,7 +876,7 @@ int main(int argc, char *argv[]) {
     }
 
 	LOG_EVENT(-1, -1, -1, "querying_addresses");
-	vector<string> addresses;
+	map<uint32_t, string> addresses;
 	query_addresses(addresses, node_rank);
 	num_nodes = addresses.size();
 	

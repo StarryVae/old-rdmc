@@ -84,7 +84,7 @@ bool slurm_init_environment()
 #endif
 }
 
-void query_addresses(vector<string> &addresses, uint32_t &node_rank) {
+void query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank) {
 	uint32_t num_nodes;
 	cout << "Please enter '[node_rank] [num_nodes]': ";
 	cin >> node_rank >> num_nodes;
@@ -94,7 +94,7 @@ void query_addresses(vector<string> &addresses, uint32_t &node_rank) {
 		// input the connection information here
 		cout << "Please enter IP Address for node " << i << ": ";
 		cin >> addr;
-		addresses.push_back(addr);
+		addresses.emplace(i, addr);
 	}
 }
 

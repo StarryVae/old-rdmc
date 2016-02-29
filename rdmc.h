@@ -6,6 +6,7 @@
 
 #include <boost/optional.hpp>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -36,7 +37,9 @@ typedef std::function<void(char* buffer, size_t size)>
 typedef std::function<void(boost::optional<uint32_t> suspected_victim)>
     failure_callback_t;
 
-void initialize(const std::vector<std::string>& addresses, uint32_t node_rank);
+void initialize(const std::map<uint32_t, std::string>& addresses,
+                uint32_t node_rank);
+void add_address(uint32_t index, const std::string& address);
 void shutdown() __attribute__ ((noreturn));
 
 void create_group(uint16_t group_number, std::vector<uint32_t> members,

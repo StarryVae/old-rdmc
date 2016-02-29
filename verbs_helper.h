@@ -62,8 +62,10 @@ public:
 };
 
 namespace impl {
-bool verbs_initialize(const std::vector<std::string>& node_addresses,
+bool verbs_initialize(const std::map<uint32_t, std::string>& node_addresses,
                       uint32_t node_rank);
+void verbs_add_connection(uint32_t index, const std::string& address,
+                          uint32_t node_rank);
 void verbs_destroy();
 // int poll_for_completions(int num, ibv_wc* wcs,
 //                          std::atomic<bool>& shutdown_flag);
