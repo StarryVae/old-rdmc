@@ -10,17 +10,12 @@ using namespace std;
 using namespace rdmc;
 
 group::group(uint16_t _group_number, size_t _block_size,
-             vector<uint32_t> _members, incoming_message_callback_t upcall,
-             completion_callback_t callback)
-    : members(_members),
-      first_block_buffer(nullptr),
-      completion_callback(callback),
-      incoming_message_upcall(upcall),
-      group_number(_group_number),
-      block_size(_block_size),
-      num_members(members.size()),
-      member_index(index_of(members, node_rank))
-{
+             vector<uint32_t> _members, uint32_t _member_index,
+             incoming_message_callback_t upcall, completion_callback_t callback)
+    : members(_members), first_block_buffer(nullptr),
+      completion_callback(callback), incoming_message_upcall(upcall),
+      group_number(_group_number), block_size(_block_size),
+      num_members(members.size()), member_index(_member_index) {
     if(member_index != 0) {
         first_block_buffer = unique_ptr<char[]>(new char[block_size]);
         memset(first_block_buffer.get(), 0, block_size);
@@ -200,7 +195,7 @@ void group::send_message(shared_ptr<memory_region> message_mr, size_t offset,
     assert(length > 0);
     assert(offset + length <= message_mr->size);
     assert(member_index == 0);
-    assert(receive_step == 0);  // Queueing sends is not supported.
+    assert(receive_step == 0 && "Queueing sends is not supported");
     assert(send_step == 0);
     assert(length <= block_size * std::numeric_limits<uint32_t>::max());
 
@@ -306,8 +301,7 @@ void group::complete_message() {
         LOG_EVENT(group_number, message_number, *first_block_number,
                   "finished_remap_first_block");
     }
-    completion_callback(group_number, rdmc::SUCCESS, mr->buffer + mr_offset,
-                        message_size);
+    completion_callback(mr->buffer + mr_offset, message_size);
 
     ++message_number;
     sending = false;
@@ -484,10 +478,10 @@ optional<group::block_transfer> tree_group::get_first_block() const {
     return block_transfer{(uint32_t)((member_index + 1) / 2 - 1), 0};
 }
 binomial_group::binomial_group(uint16_t group_number, size_t block_size,
-                               vector<uint32_t> members,
+                               vector<uint32_t> members, uint32_t member_index,
                                incoming_message_callback_t upcall,
                                completion_callback_t callback)
-    : group(group_number, block_size, members, upcall, callback),
+    : group(group_number, block_size, members, member_index,  upcall, callback),
       log2_num_members(floor(log2(num_members))) /*,
       vertex(member_index & ((1 << log2_num_members) - 1))*/ {
     // size_t vertex_twin = vertex | (1 << log2_num_members);

@@ -15,29 +15,6 @@ extern "C" {
 #include <infiniband/verbs.h>
 }
 
-namespace rdmc {
-extern unsigned int job_number;
-extern unsigned int job_step;
-extern uint32_t node_rank;
-extern uint32_t num_nodes;
-extern std::vector<std::string> node_addresses;
-};
-
-// structure of system resources
-// struct resources {
-//     ibv_device_attr device_attr;  // Device attributes
-//     ibv_port_attr port_attr;      // IB port attributes
-//     cm_con_data_t remote_props;   // values to connect to remote side
-//     ibv_context *ib_ctx;          // device handle
-//     ibv_pd *pd;                   // PD handle
-//     ibv_cq *cq;                   // CQ handle
-//     ibv_qp *qp;                   // QP handle
-//     ibv_mr *mr;                   // MR handle for buf
-//     int sock;                     // TCP socket file descriptor
-//     char *buf;                    // memory buffer pointer, used for
-//                                   // RDMA and send ops
-// };
-
 class completion_queue {};
 
 class memory_region {
@@ -83,16 +60,8 @@ public:
                     bool send_inline = false);
 };
 
-// int get_sockets(int rank);
-
-// int prepare_send(struct resources *res, char *msg, int size);
-// int prepare_recv(struct resources *res, char *msg, int size);
-// int post_send(struct resources *res);
-// int post_receive(struct resources *res);
-
-// void resources_init(struct resources *res);
-// int resources_create(struct resources *res);
-bool verbs_initialize();
+bool verbs_initialize(const std::vector<std::string>& node_addresses,
+					  uint32_t node_rank);
 void verbs_destroy();
 int poll_for_completions(int num, ibv_wc* wcs,
                          std::atomic<bool>& shutdown_flag);

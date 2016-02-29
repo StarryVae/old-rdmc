@@ -24,8 +24,6 @@
 #include <vector>
 
 using namespace std;
-using rdmc::node_rank;
-using rdmc::num_nodes;
 
 template <class T>
 struct stat {
@@ -56,6 +54,9 @@ atomic<size_t> small_sends_left;
 // Map from (group_size, block_size, send_type) to group_number.
 map<std::tuple<uint32_t, size_t, rdmc::send_algorithm>, uint16_t> send_groups;
 uint16_t next_group_number;
+
+uint32_t node_rank;
+uint32_t num_nodes;
 
 send_stats measure_multicast(size_t size, size_t block_size,
                              uint32_t group_size, size_t iterations,
@@ -91,14 +92,16 @@ send_stats measure_multicast(size_t size, size_t block_size,
             [&](size_t length) -> rdmc::receive_destination {
                 return {mr, 0};
             },
-            [&](uint16_t group_number, rdmc::completion_status, char *data,
-                size_t) {
+            [&](char *data, size_t) {
                 LOG_EVENT(-1, -1, -1, "completion_callback");
                 // unique_lock<mutex> lk(send_mutex);
                 send_completion_time = get_time();
                 LOG_EVENT(-1, -1, -1, "stop_send_timer");
                 send_done_cv.notify_all();
-            });
+            },
+			[group_number = next_group_number](optional<uint32_t>){
+				LOG_EVENT(group_number, -1, -1, "send_failed");
+			});
         LOG_EVENT(-1, -1, -1, "group_created");
         send_groups.emplace(send_params, next_group_number++);
     }
@@ -238,8 +241,7 @@ send_stats measure_concurrent_multicast(
             [&mr, i, size](size_t length) -> rdmc::receive_destination {
                 return {mr, size * i};
             },
-            [&sends_remaining, i](uint16_t group_number, rdmc::completion_status,
-                               char *data, size_t) {
+            [&sends_remaining, i](char *data, size_t) {
                 LOG_EVENT(-1, -1, -1, "completion_callback");
                 // printf("Send #%d completed, %d remaining\n", (int)i,
                 //        (int)sends_remaining - 1);
@@ -248,7 +250,10 @@ send_stats measure_concurrent_multicast(
                     LOG_EVENT(-1, -1, -1, "stop_send_timer");
                     //send_done_cv.notify_all();
                 }
-            });
+            },
+			[group_number = base_group_number + i](optional<uint32_t>){
+				LOG_EVENT(group_number, -1, -1, "send_failed");
+			});
         LOG_EVENT(-1, -1, -1, "group_created");
     }
 
@@ -867,8 +872,12 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
+	LOG_EVENT(-1, -1, -1, "querying_addresses");
+	vector<string> addresses;
+	query_addresses(addresses, node_rank);
+	num_nodes = addresses.size();
     LOG_EVENT(-1, -1, -1, "calling_init");
-    rdmc::initialize();
+    rdmc::initialize(addresses, node_rank);
     LOG_EVENT(-1, -1, -1, "init_done");
     TRACE("Finished initializing.");
 

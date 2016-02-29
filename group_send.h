@@ -81,7 +81,8 @@ protected:
 
 public:
     group(uint16_t group_number, size_t block_size, vector<uint32_t> members,
-          incoming_message_callback_t upcall, completion_callback_t callback);
+		  uint32_t member_index, incoming_message_callback_t upcall,
+		  completion_callback_t callback);
 
     void receive_block(uint32_t send_imm);
     void receive_ready_for_block(uint32_t step, uint32_t sender);
@@ -168,7 +169,8 @@ public:
                                              size_t num_blocks,
                                              size_t total_steps);
     binomial_group(uint16_t group_number, size_t block_size,
-                   vector<uint32_t> members, incoming_message_callback_t upcall,
+                   vector<uint32_t> members, uint32_t member_index,
+                   incoming_message_callback_t upcall,
                    completion_callback_t callback);
 
 protected:

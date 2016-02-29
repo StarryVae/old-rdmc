@@ -84,28 +84,22 @@ bool slurm_init_environment()
 #endif
 }
 
+void query_addresses(vector<string> &addresses, uint32_t &node_rank) {
+	uint32_t num_nodes;
+	cout << "Please enter '[node_rank] [num_nodes]': ";
+	cin >> node_rank >> num_nodes;
+
+	string addr;
+	for(uint32_t i = 0; i < num_nodes; ++i) {
+		// input the connection information here
+		cout << "Please enter IP Address for node " << i << ": ";
+		cin >> addr;
+		addresses.push_back(addr);
+	}
+}
+
 void init_environment() {
 	epoch_start = get_time();
-    // rdmc::job_number = lexical_cast<unsigned int,
-    // string>(getenv("SLURM_JOBID"));
-    // rdmc::job_step = lexical_cast<unsigned int,
-    // string>(getenv("SLURM_STEPID"));
-	rdmc::job_number = 0;
-	rdmc::job_step = 0;
-	
-	if(!slurm_init_environment())
-	{
-		cout << "Please enter '[node_rank] [num_nodes]': ";
-		cin >> rdmc::node_rank >> rdmc::num_nodes;
-
-		string addr;
-		for(uint32_t i = 0; i < rdmc::num_nodes; ++i) {
-			// input the connection information here
-			cout << "Please enter IP Address for node " << i << ": ";
-			cin >> addr;
-			rdmc::node_addresses.push_back(addr);
-		}
-	}
 }
 
 void do_barrier() {}
