@@ -53,7 +53,7 @@ void put_flush(const char *str) {
 
 // Attempts to init environment using slurm and returns whether it was
 // successful.
-bool slurm_init_environment()
+bool slurm_query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank)
 {
 #ifdef USE_SLURM
     char *nodeid_ptr = getenv("SLURM_NODEID");
@@ -67,17 +67,18 @@ bool slurm_init_environment()
 	    return false;
 
 	char* host;
+	uint32_t i = 0;
 	while((host = slurm_hostlist_shift(hostlist))){
-	    rdmc::node_addresses.push_back(host);
+	    addresses.emplace(i++, host);
 	}
 
     slurm_hostlist_destroy(hostlist);
 
-	rdmc::node_rank = lexical_cast<unsigned int>(string(nodeid_ptr));
-	rdmc::num_nodes = lexical_cast<unsigned int>(string(nnodes_ptr));
+	node_rank = lexical_cast<uint32_t>(string(nodeid_ptr));
+	uint32_t num_nodes = lexical_cast<uint32_t>(string(nnodes_ptr));
 
-	assert(rdmc::node_addresses.size() == rdmc::num_nodes);
-	assert(rdmc::node_rank < rdmc::num_nodes);
+	assert(addresses.size() == num_nodes);
+	assert(node_rank < num_nodes);
 	return true;
 #else
 	return false;
@@ -85,6 +86,9 @@ bool slurm_init_environment()
 }
 
 void query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank) {
+	if(slurm_query_addresses(addresses, node_rank))
+		return;
+	
 	uint32_t num_nodes;
 	cout << "Please enter '[node_rank] [num_nodes]': ";
 	cin >> node_rank >> num_nodes;
