@@ -120,6 +120,16 @@ double compute_stddev(std::vector<double> v) {
 
 vector<event> events;
 std::mutex events_mutex;
+void start_flush_server(){
+    auto flush_server = []() {
+        while(true) {
+            flush_events();
+            this_thread::sleep_for(chrono::seconds(10));
+        }
+    };
+    thread t(flush_server);
+    t.detach();
+}
 void flush_events() {
     std::unique_lock<std::mutex> lock(events_mutex);
 
