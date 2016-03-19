@@ -30,7 +30,7 @@ struct config_t {
     string ip_addr;              // server host name
 	//    uint32_t tcp_port = 19875;   // server TCP port
     int ib_port = 1;             // local IB port to work with
-    int gid_idx = -1;            // gid index to use
+    int gid_idx = 0;            // gid index to use
 };
 
 // structure to exchange data which is needed to connect the QPs
