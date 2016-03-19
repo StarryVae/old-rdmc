@@ -662,7 +662,7 @@ void concurrent_bandwidth_group_size() {
 void large_send() {
     LOG_EVENT(-1, -1, -1, "start_large_send");
     auto s =
-        measure_multicast(16 << 20, 1 << 20, num_nodes, 16, rdmc::TREE_SEND);
+        measure_multicast(16 << 20, 1 << 20, num_nodes, 16, rdmc::BINOMIAL_SEND);
 //    flush_events();
     printf("Bandwidth = %f(%f) Gb/s\n", s.bandwidth.mean, s.bandwidth.stddev);
     printf("Latency = %f(%f) ms\n", s.time.mean, s.time.stddev);
@@ -910,12 +910,8 @@ int main(int argc, char *argv[]) {
     printf("Experiment Name: %s\n", argv[1]);
     if(argc <= 1 || strcmp(argv[1], "custom") == 0) {
         for(int i = 0; i < 3; i++) {
-			//universal_barrier_group->barrier_wait();
-			large_send();
+            large_send();
         }
-		//        flush_events();
-        rdmc::shutdown();
-        exit(0);
     } else if(strcmp(argv[1], "blocksize4") == 0) {
         blocksize_v_bandwidth(4);
     } else if(strcmp(argv[1], "blocksize16") == 0) {
@@ -935,13 +931,8 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
     }
 
-    // flush_events();
-
-    // if(node_rank == 0) {
-        TRACE("About to trigger shutdown");
-		exit(0);
-        rdmc::shutdown();
-    // }
-
-	// this_thread::sleep_for(chrono::seconds(10));
+    TRACE("About to trigger shutdown");
+    universal_barrier_group->barrier_wait();
+    universal_barrier_group.reset();
+    rdmc::shutdown();
 }
