@@ -254,6 +254,9 @@ void send(uint16_t group_number, shared_ptr<memory_region> mr, size_t offset,
 barrier_group::barrier_group(vector<uint32_t> members) {
 	member_index = index_of(members, node_rank);
 	group_size = members.size();
+
+	if(group_size <= 1 || member_index >= members.size())
+		throw rdmc::invalid_args();
 	
     total_steps = ceil(log2(group_size));
     for(unsigned int m = 0; m < total_steps; m++)
@@ -308,7 +311,7 @@ void barrier_group::barrier_wait() {
                form_tag(0, (node_rank + (1 << m)) % group_size,
                         MessageType::BARRIER),
                remote_memory_regions[m], m * 8, false, true)) {
-            throw connection_broken();
+            throw rdmc::connection_broken();
         }
 
         while(steps[m] < number)

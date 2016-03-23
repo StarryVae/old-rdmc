@@ -17,6 +17,7 @@ namespace rdmc {
 
 class exception {};
 class connection_broken : public exception {};
+class invalid_args : public exception {};
 
 enum send_algorithm {
     BINOMIAL_SEND = 1,

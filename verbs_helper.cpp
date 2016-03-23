@@ -5,7 +5,6 @@
 
 #include <arpa/inet.h>
 #include <byteswap.h>
-#include <cassert>
 #include <cstring>
 #include <endian.h>
 #include <getopt.h>
@@ -27,10 +26,8 @@ const uint32_t TCP_PORT = 19875;
 
 struct config_t {
     const char *dev_name;        // IB device name
-    string ip_addr;              // server host name
-	//    uint32_t tcp_port = 19875;   // server TCP port
     int ib_port = 1;             // local IB port to work with
-    int gid_idx = 0;            // gid index to use
+    int gid_idx = 0;             // gid index to use
 };
 
 // structure to exchange data which is needed to connect the QPs
@@ -144,28 +141,23 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
                       uint32_t node_rank) {
     memset(&verbs_resources, 0, sizeof(verbs_resources));
 
-    // config_vec.resize(num_nodes);
-    // for(uint32_t i = 0; i < num_nodes; ++i) {
-    //     config_vec[i].ip_addr = node_addresses[i];
-    // }
-
 	auto local_it = node_addresses.find(node_rank);
 	if(local_it == node_addresses.end()){
 		fprintf(stderr, "ERROR: address list for verbs_initialize doesn't"
 				"contain current node");
 		return false;
 	}
-	local_config.ip_addr = local_it->second;
 
     connection_listener = make_unique<tcp::connection_listener>(TCP_PORT);
 	
     TRACE("Starting connection phase");
 
-    // Connect to other nodes in group. Since map traversal is sorted, we don't
+    // Connect to other nodes in group. Since map traversal is ordered, we don't
     // have to worry about circular waits, so deadlock can't occur.
     for(auto it = node_addresses.begin(); it != node_addresses.end(); it++) {
 		if(it->first != node_rank){
-			verbs_add_connection(it->first, it->second, node_rank);
+			// Keep going even if we fail to connect to a node.
+			(void)verbs_add_connection(it->first, it->second, node_rank);
 		}
     }
     TRACE("Done connecting");
@@ -271,15 +263,24 @@ resources_create_exit:
     }
     return false;
 }
-void verbs_add_connection(uint32_t index, const string &address,
+bool verbs_add_connection(uint32_t index, const string &address,
                           uint32_t node_rank) {
+
+	if(sockets.count(index) > 0){
+        fprintf(stderr,
+                "WARNING: attempted to connect to node %u at %s:%d "
+                "but we already have a connection to a node with that index.",
+                (unsigned int)index, address.c_str(), TCP_PORT);
+        return false;
+	}
+		
     if(index < node_rank) {
         try {
             sockets[index] = tcp::socket(address, TCP_PORT);
         } catch(tcp::exception) {
             fprintf(stderr, "WARNING: failed to node %u at %s:%d",
                     (unsigned int)index, address.c_str(), TCP_PORT);
-            return;
+            return false;
         }
 
         // Make sure that the connection works, and that we've connected to the
@@ -290,6 +291,7 @@ void verbs_add_connection(uint32_t index, const string &address,
                     "WARNING: failed to exchange rank with node %u at %s:%d",
                     (unsigned int)index, address.c_str(), TCP_PORT);
             sockets.erase(index);
+			return false;
         } else if(remote_rank != index) {
             fprintf(stderr,
                     "WARNING: node at %s:%d replied with wrong rank (expected"
@@ -298,6 +300,7 @@ void verbs_add_connection(uint32_t index, const string &address,
                     (unsigned int)remote_rank);
 
             sockets.erase(index);
+			return false;
         }
     } else if(index > node_rank) {
         try {
@@ -306,16 +309,23 @@ void verbs_add_connection(uint32_t index, const string &address,
             uint32_t remote_rank = 0;
             if(!s.exchange(node_rank, remote_rank)) {
                 fprintf(stderr, "WARNING: failed to exchange rank with node");
-            }else{
+				return false;
+            }else{ 
 				sockets[remote_rank] = std::move(s);
+				return true;
 			}
         } catch(tcp::exception) {
             fprintf(stderr, "Got error while attempting to listing on port");
+			return false;
         }
     }
+
+	return false; // we can't connect to ourselves...
 }
 }
 memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
+    if(!buffer || size == 0) throw rdma::invalid_args();
+
     int mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
                    IBV_ACCESS_REMOTE_WRITE;
 
@@ -327,8 +337,9 @@ memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
         [](ibv_mr *m) { ibv_dereg_mr(m); });
 
     if(!mr) {
-        fprintf(stderr, "ibv_reg_mr failed with mr_flags=0x%x\n", mr_flags);
-        assert(false);
+        fprintf(stderr, "ERROR: ibv_reg_mr failed with mr_flags=0x%x\n",
+                mr_flags);
+        throw rdma::mr_creation_failure();
     }
 
     // fprintf(
@@ -343,7 +354,11 @@ queue_pair::~queue_pair() {
 	//    if(qp) cout << "Destroying Queue Pair..." << endl;
 }
 queue_pair::queue_pair(size_t remote_index) {
-    auto &sock = sockets[remote_index];
+	auto it = sockets.find(remote_index);
+	if(it == sockets.end())
+		throw rdma::invalid_args();
+	
+    auto &sock = it->second;
 
     ibv_qp_init_attr qp_init_attr;
     memset(&qp_init_attr, 0, sizeof(qp_init_attr));
@@ -363,7 +378,7 @@ queue_pair::queue_pair(size_t remote_index) {
     
     if(!qp) {
         fprintf(stderr, "failed to create QP\n");
-        assert(false);
+		throw rdma::qp_creation_failure();
     }
 
     struct cm_con_data_t local_con_data;
@@ -392,7 +407,7 @@ queue_pair::queue_pair(size_t remote_index) {
     // fprintf(stdout, "Local LID        = 0x%x\n", verbs_resources.port_attr.lid);
 
     if(!sock.exchange(local_con_data, remote_con_data))
-		assert(false);
+		throw rdma::qp_creation_failure();
 
     bool success =
         !modify_qp_to_init(qp.get(), local_config.ib_port) &&
@@ -409,7 +424,7 @@ queue_pair::queue_pair(size_t remote_index) {
     /* just send a dummy char back and forth */
 	int tmp = -1;
     if(!sock.exchange(0, tmp) || tmp != 0)
-		assert(false);
+		throw rdma::qp_creation_failure();
 }
 bool queue_pair::post_send(const memory_region &mr, size_t offset,
                            size_t length, uint64_t wr_id, uint32_t immediate) {

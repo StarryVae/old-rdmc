@@ -16,8 +16,11 @@ struct ibv_qp;
 
 namespace rdma{
 class exception {};
-class connection_broken {};
-
+class invalid_args : public exception {};
+class connection_broken : public exception {};
+class creation_failure : public exception {};
+class mr_creation_failure : public creation_failure {};
+class qp_creation_failure : public creation_failure {};
 class memory_region {
     std::unique_ptr<ibv_mr, std::function<void(ibv_mr*)>> mr;
     friend class queue_pair;
@@ -64,7 +67,7 @@ public:
 namespace impl {
 bool verbs_initialize(const std::map<uint32_t, std::string>& node_addresses,
                       uint32_t node_rank);
-void verbs_add_connection(uint32_t index, const std::string& address,
+bool verbs_add_connection(uint32_t index, const std::string& address,
                           uint32_t node_rank);
 void verbs_destroy();
 // int poll_for_completions(int num, ibv_wc* wcs,

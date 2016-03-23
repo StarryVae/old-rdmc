@@ -18,7 +18,7 @@ size_t index_of(T container, U elem) {
 
         n++;
     }
-    return (size_t)-1;
+    return container.size();
 }
 bool file_exists(const std::string &name);
 void create_directory(const std::string &name);
