@@ -25,6 +25,9 @@ group::group(uint16_t _group_number, size_t _block_size,
             first_block_buffer.get(), block_size);
     }
 }
+group::~group(){
+	unique_lock<mutex> lock(monitor);
+}
 void group::receive_block(uint32_t send_imm) {
     unique_lock<mutex> lock(monitor);
 
@@ -42,6 +45,8 @@ void group::receive_block(uint32_t send_imm) {
         auto destination = incoming_message_upcall(message_size);
         mr_offset = destination.offset;
         mr = destination.mr;
+
+		assert(mr->size >= mr_offset + message_size);
         //////////////////////////////////////////////////////
 
         num_received_blocks = 1;
@@ -193,17 +198,20 @@ void group::send_message(shared_ptr<memory_region> message_mr, size_t offset,
 
     unique_lock<mutex> lock(monitor);
 
-    assert(length > 0);
-    assert(offset + length <= message_mr->size);
-    assert(member_index == 0);
-    assert(receive_step == 0 && "Queueing sends is not supported");
-    assert(send_step == 0);
-    assert(length <= block_size * std::numeric_limits<uint32_t>::max());
+	if(length == 0) throw rdmc::invalid_args();
+    if(offset + length > message_mr->size) throw rdmc::invalid_args();
+    if(member_index > 0) throw rdmc::nonroot_sender();
 
+	 //Queueing sends is not supported
+    if(receive_step > 0) throw rdmc::group_busy();
+    if(send_step > 0) throw rdmc::group_busy();
+	
     mr = message_mr;
     mr_offset = offset;
     message_size = length;
     num_blocks = (message_size - 1) / block_size + 1;
+	if(num_blocks > std::numeric_limits<uint16_t>::max())
+		throw rdmc::invalid_args();
     // printf("message_size = %lu, block_size = %lu, num_blocks = %lu\n",
     //        message_size, block_size, num_blocks);
     LOG_EVENT(group_number, message_number, -1, "send_message");

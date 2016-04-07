@@ -18,6 +18,8 @@ namespace rdmc {
 class exception {};
 class connection_broken : public exception {};
 class invalid_args : public exception {};
+class nonroot_sender : public exception {};
+class group_busy : public exception {};
 
 enum send_algorithm {
     BINOMIAL_SEND = 1,
@@ -38,19 +40,19 @@ typedef std::function<void(char* buffer, size_t size)>
 typedef std::function<void(boost::optional<uint32_t> suspected_victim)>
     failure_callback_t;
 
-void initialize(const std::map<uint32_t, std::string>& addresses,
+bool initialize(const std::map<uint32_t, std::string>& addresses,
                 uint32_t node_rank);
 void add_address(uint32_t index, const std::string& address);
-void shutdown() __attribute__ ((noreturn));
+void shutdown();
 
-void create_group(uint16_t group_number, std::vector<uint32_t> members,
+bool create_group(uint16_t group_number, std::vector<uint32_t> members,
                   size_t block_size, send_algorithm algorithm,
                   incoming_message_callback_t incoming_receive,
                   completion_callback_t send_callback,
                   failure_callback_t failure_callback);
 void destroy_group(uint16_t group_number);
 
-void send(uint16_t group_number, std::shared_ptr<rdma::memory_region> mr,
+bool send(uint16_t group_number, std::shared_ptr<rdma::memory_region> mr,
           size_t offset, size_t length);
 
 class barrier_group {
