@@ -84,8 +84,8 @@ static int modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn,
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;
-    attr.min_rnr_timer = 0x12;
-    attr.ah_attr.is_global = 0;
+    attr.min_rnr_timer = 12;
+    attr.ah_attr.is_global = 1;
     attr.ah_attr.dlid = dlid;
     attr.ah_attr.sl = 0;
     attr.ah_attr.src_path_bits = 0;
@@ -95,7 +95,7 @@ static int modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn,
         attr.ah_attr.port_num = 1;
         memcpy(&attr.ah_attr.grh.dgid, dgid, 16);
         attr.ah_attr.grh.flow_label = 0;
-        attr.ah_attr.grh.hop_limit = 1;
+        attr.ah_attr.grh.hop_limit = 0xFF;
         attr.ah_attr.grh.sgid_index = gid_idx;
         attr.ah_attr.grh.traffic_class = 0;
     }
@@ -114,7 +114,7 @@ static int modify_qp_to_rts(struct ibv_qp *qp) {
     attr.qp_state = IBV_QPS_RTS;
     attr.timeout = 4;
     attr.retry_cnt = 6;
-    attr.rnr_retry = 7;
+    attr.rnr_retry = 6;
     attr.sq_psn = 0;
     attr.max_rd_atomic = 1;
     flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
@@ -156,8 +156,10 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     // have to worry about circular waits, so deadlock can't occur.
     for(auto it = node_addresses.begin(); it != node_addresses.end(); it++) {
 		if(it->first != node_rank){
-			// Keep going even if we fail to connect to a node.
-			(void)verbs_add_connection(it->first, it->second, node_rank);
+			if(!verbs_add_connection(it->first, it->second, node_rank)){
+				fprintf(stderr, "WARNING: failed to connect to node %d at %s\n",
+						(int)it->first, it->second.c_str());
+			}
 		}
     }
     TRACE("Done connecting");
@@ -264,17 +266,16 @@ resources_create_exit:
     return false;
 }
 bool verbs_add_connection(uint32_t index, const string &address,
-                          uint32_t node_rank) {
-
-	if(sockets.count(index) > 0){
-        fprintf(stderr,
-                "WARNING: attempted to connect to node %u at %s:%d "
-                "but we already have a connection to a node with that index.",
-                (unsigned int)index, address.c_str(), TCP_PORT);
-        return false;
-	}
-		
+                          uint32_t node_rank) {		
     if(index < node_rank) {
+		if(sockets.count(index) > 0){
+            fprintf(stderr,
+                    "WARNING: attempted to connect to node %u at %s:%d but we "
+                    "already have a connection to a node with that index.",
+                    (unsigned int)index, address.c_str(), TCP_PORT);
+            return false;
+		}
+
         try {
             sockets[index] = tcp::socket(address, TCP_PORT);
         } catch(tcp::exception) {
@@ -302,6 +303,7 @@ bool verbs_add_connection(uint32_t index, const string &address,
             sockets.erase(index);
 			return false;
         }
+		return true;
     } else if(index > node_rank) {
         try {
             tcp::socket s = connection_listener->accept();
@@ -347,9 +349,33 @@ memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
     //     "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
     //     buffer, mr->lkey, mr->rkey, mr_flags);
 }
-uint32_t memory_region::get_rkey() const{
-	return mr->rkey;
-}
+// memory_region::memory_region(ibv_mr *_mr)
+//     : mr(_mr, [](ibv_mr *m) { ibv_dereg_mr(m); }),
+//       buffer((char*)mr->addr),
+//       size(mr->length) {}
+// static ibv_mr *exp_reg_mr(ibv_pd *pd, void *addr, size_t len, uint64_t flags) {
+//     ibv_exp_reg_mr_in in;
+//     in.pd = pd;
+// 	in.addr = addr;
+// 	in.length = len;
+// 	in.exp_access = flags;
+// 	in.comp_mask = 0;
+// 	in.create_flags = 0;
+// 	return ibv_exp_reg_mr(&in);
+// }
+// memory_region::memory_region(size_t s)
+//     : memory_region(exp_reg_mr(
+//           verbs_resources.pd, NULL, s,
+//           IBV_EXP_ACCESS_LOCAL_WRITE | IBV_EXP_ACCESS_REMOTE_READ |
+//               IBV_EXP_ACCESS_REMOTE_WRITE | IBV_EXP_ACCESS_ALLOCATE_MR)) {
+//     if(size == 0) throw rdma::invalid_args();
+
+//     if(!mr) {
+//         fprintf(stderr, "ERROR: ibv_reg_mr failed");
+//         throw rdma::mr_creation_failure();
+//     }
+// }
+uint32_t memory_region::get_rkey() const { return mr->rkey; }
 queue_pair::~queue_pair() {
 	//    if(qp) cout << "Destroying Queue Pair..." << endl;
 }
