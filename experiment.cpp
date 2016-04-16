@@ -697,110 +697,35 @@ void concurrent_send() {
 #define ANSI_COLOR_CYAN "\x1b[36m"
 #define ANSI_COLOR_RESET "\x1b[0m"
 void test_pattern() {
-    bool pass = true;
     size_t n = 0;
     auto t = get_time();
-    for(size_t group_size = 2; group_size <= 1024; group_size++) {
-        for(size_t message_size = 1; message_size < 16; message_size++) {
+    for(size_t group_size = 2; group_size <= 64; group_size++) {
+        for(size_t message_size = 1; message_size <= 32; message_size++) {
             size_t total_steps = message_size + ceil(log2(group_size)) - 1;
-            for(unsigned int node = 0; node < group_size; node++) {
-                //printf("%10d         ", node);
-            }
-            //printf("\n");
-            for(unsigned int node = 0; node < group_size; node++) {
-                //printf("---------------    ");
-            }
-            //printf("\n");
             for(unsigned int step = 0; step < total_steps; step++) {
                 for(unsigned int node = 0; node < group_size; node++) {
+
+					// Compute the outgoing transfer for this node/step
                     auto transfer = binomial_group::get_outgoing_transfer(
                         node, step, group_size, floor(log2(group_size)),
                         message_size, total_steps);
                     n++;
+
                     if(transfer) {
-                        try {
-                            auto reverse =
-                                binomial_group::get_incoming_transfer(
-                                    transfer->target, step, group_size,
-                                    floor(log2(group_size)), message_size,
-                                    total_steps);
-                            n++;
-                            if(!reverse) throw false;
-                            if(transfer->block_number != reverse->block_number)
-                                throw false;
+						// See what the supposed sender is doing this step
+                        auto reverse = binomial_group::get_incoming_transfer(
+                            transfer->target, step, group_size,
+                            floor(log2(group_size)), message_size, total_steps);
+                        n++;
 
-                            if(node != 0) {
-                                for(int s = step - 1; s >= 0; s--) {
-                                    auto prev =
-                                        binomial_group::get_incoming_transfer(
-                                            node, s, group_size,
-                                            floor(log2(group_size)),
-                                            message_size, total_steps);
-                                    n++;
-                                    if(prev &&
-                                       prev->block_number ==
-                                           transfer->block_number)
-                                        break;
+						// Make sure the two nodes agree
+                        if(!reverse) throw false;
+                        if(transfer->block_number != reverse->block_number)
+                            throw false;
 
-                                    if(s == 0) {
-                                        // //printf(
-                                        //     "\nERROR block sent before
-                                        //     receive: "
-                                        //     "node = %d, "
-                                        //     "step = %d, block_number =
-                                        //     %lu\n",
-                                        //     node, step,
-                                        //     transfer->block_number);
-                                        throw false;
-                                    }
-                                    //                                assert(s
-                                    //                                != 0);
-                                }
-                            }
-                            // bool heighest = true;
-                            // for(int s = 0; s < step; s++){
-                            //     auto t =
-                            //     binomial_group::get_incoming_transfer(
-                            //         node, s, group_size,
-                            //         floor(log2(group_size)),
-                            //         32, 35);
-                            //     if(t && t->block_number >
-                            //     transfer->block_number)
-                            //         heighest = false;
-                            // }
-
-                            // if(heighest)
-                            //printf("(%2d,%2lu) ", (int)transfer->target,
-                            //       transfer->block_number);
-                        } catch(...) {
-                            //printf(
-                            //    ANSI_COLOR_RED "(%2d,%2lu) " ANSI_COLOR_RESET,
-                            //    (int)transfer->target, transfer->block_number);
-                            pass = false;
-                        }
-                    } else {
-                        //printf("        ");
-                    }
-                    transfer = binomial_group::get_incoming_transfer(
-                        node, step, group_size, floor(log2(group_size)),
-                        message_size, total_steps);
-                    n++;
-                    if(transfer) {
-                        try {
-                            auto reverse =
-                                binomial_group::get_outgoing_transfer(
-                                    transfer->target, step, group_size,
-                                    floor(log2(group_size)), message_size,
-                                    total_steps);
-                            n++;
-                            if(!reverse) throw false;
-                            if(transfer->block_number != reverse->block_number)
-                                throw false;
-                            if(reverse->target != node) throw false;
-                            // assert(reverse);
-                            // assert(transfer->block_number ==
-                            // reverse->block_number);
-
+						// If we aren't the root sender, also check that the
+                        // node got this block on a past step.
+                        if(node != 0) {
                             for(int s = step - 1; s >= 0; s--) {
                                 auto prev =
                                     binomial_group::get_incoming_transfer(
@@ -809,31 +734,50 @@ void test_pattern() {
                                         total_steps);
                                 n++;
                                 if(prev &&
-                                   prev->block_number ==
-                                       transfer->block_number) {
-                                    // //printf(
-                                    //     "\nERROR received block twice: "
-                                    //     "node = %d, "
-                                    //     "step = %d, block_number = %lu\n",
-                                    //     node, step, transfer->block_number);
+                                   prev->block_number == transfer->block_number)
+                                    break;
+
+                                if(s == 0) {
                                     throw false;
                                 }
                             }
-                            //printf("(%2d,%2lu)    ", (int)transfer->target,
-                            //       transfer->block_number);
-                        } catch(...) {
-                            //printf(ANSI_COLOR_RED
-                            //       "(%2d,%2lu)    " ANSI_COLOR_RESET,
-                            //       (int)transfer->target,
-                            //       transfer->block_number);
-                            pass = false;
                         }
-                    } else {
-                        //printf("           ");
+                    }
+
+					// Compute the incoming transfer for this node/step
+					transfer = binomial_group::get_incoming_transfer(
+                        node, step, group_size, floor(log2(group_size)),
+                        message_size, total_steps);
+                    n++;
+					
+                    if(transfer) {
+						// Again make sure the supposed receiver agrees
+                        auto reverse = binomial_group::get_outgoing_transfer(
+                            transfer->target, step, group_size,
+                            floor(log2(group_size)), message_size, total_steps);
+                        n++;
+                        if(!reverse) throw false;
+                        if(transfer->block_number != reverse->block_number)
+                            throw false;
+                        if(reverse->target != node) throw false;
+
+						// Make sure we don't already have the block we're
+						// getting.
+                        for(int s = step - 1; s >= 0; s--) {
+                            auto prev = binomial_group::get_incoming_transfer(
+                                node, s, group_size, floor(log2(group_size)),
+                                message_size, total_steps);
+                            n++;
+                            if(prev &&
+                               prev->block_number == transfer->block_number) {
+                                throw false;
+                            }
+                        }
                     }
                 }
-                //printf("\n");
             }
+
+			// Make sure that all nodes get every block
             for(unsigned int node = 1; node < group_size; node++) {
                 set<size_t> blocks;
                 for(unsigned int step = 0; step < total_steps; step++) {
@@ -843,29 +787,14 @@ void test_pattern() {
 
                     if(transfer) blocks.insert(transfer->block_number);
                 }
-                if(blocks.size() != message_size) {
-                    pass = false;
-                    //printf("Node %u missing blocks: ", node);
-
-                    bool b = false;
-                    for(size_t block = 0; block < message_size; block++) {
-                        if(blocks.count(block) == 0) {
-                            if(b) //printf(", ");
-                            b = true;
-
-                            //printf("%lu", (unsigned long)block);
-                        }
-                    }
-                    //printf("\n");
-                }
+                if(blocks.size() != message_size)
+                    throw false;
             }
-
         }
     }
     auto diff = get_time() - t;
     printf("average time = %f ns\n", (double)diff / n);
-    if(pass)puts("PASS");
-    else puts("FAIL");
+    puts("PASS");
 }
 
 int main(int argc, char *argv[]) {
@@ -885,7 +814,7 @@ int main(int argc, char *argv[]) {
 	num_nodes = addresses.size();
 	
     LOG_EVENT(-1, -1, -1, "calling_init");
-    rdmc::initialize(addresses, node_rank);
+    assert(rdmc::initialize(addresses, node_rank));
 
     LOG_EVENT(-1, -1, -1, "creating_barrier_group");
 	vector<uint32_t> members;
