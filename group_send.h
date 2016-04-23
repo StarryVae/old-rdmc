@@ -85,7 +85,7 @@ public:
 		  completion_callback_t callback);
 	virtual ~group();
 
-    void receive_block(uint32_t send_imm);
+    void receive_block(uint32_t send_imm, size_t size);
     void receive_ready_for_block(uint32_t step, uint32_t sender);
     void complete_block_send();
 

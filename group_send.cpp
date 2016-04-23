@@ -28,7 +28,7 @@ group::group(uint16_t _group_number, size_t _block_size,
 group::~group(){
 	unique_lock<mutex> lock(monitor);
 }
-void group::receive_block(uint32_t send_imm) {
+void group::receive_block(uint32_t send_imm, size_t received_block_size) {
     unique_lock<mutex> lock(monitor);
 
     assert(member_index > 0);
@@ -38,7 +38,10 @@ void group::receive_block(uint32_t send_imm) {
         first_block_number =
             min(get_first_block()->block_number, num_blocks - 1);
         message_size = num_blocks * block_size;
-
+		if(num_blocks == 1){
+			message_size = received_block_size;
+		}
+		
         assert(*first_block_number == parse_immediate(send_imm).block_number);
 
         //////////////////////////////////////////////////////
@@ -122,6 +125,12 @@ void group::receive_block(uint32_t send_imm) {
         }
         assert(block_number == parse_immediate(send_imm).block_number);
 
+		if(block_number == num_blocks - 1){
+			message_size = (num_blocks-1) * block_size + received_block_size;
+		} else{
+			assert(received_block_size == block_size);
+		}
+		
         received_blocks[block_number] = true;
 
 		LOG_EVENT(group_number, message_number, block_number,

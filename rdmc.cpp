@@ -126,7 +126,7 @@ static void main_loop() {
                         g = it->second;
                     }
 
-                    g->receive_block(wc.imm_data);
+                    g->receive_block(wc.imm_data, wc.byte_len);
                 } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
                     shared_ptr<group> g;
 

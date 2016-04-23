@@ -78,11 +78,13 @@ send_stats measure_multicast(size_t size, size_t block_size,
 	std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
         group_size, block_size, type);
 
-    unique_ptr<char[]> buffer(new char[size]);
+	size_t num_blocks = (size-1) / block_size + 1;
+	size_t buffer_size = num_blocks * block_size;
+    unique_ptr<char[]> buffer(new char[buffer_size]);
     //    memset(buffer.get(), 1, size);
     //    memset(buffer.get(), 0, size);
     shared_ptr<memory_region> mr =
-        make_shared<memory_region>(buffer.get(), size);
+        make_shared<memory_region>(buffer.get(), buffer_size);
 
     if(send_groups.count(send_params) == 0) {
         vector<uint32_t> members;
