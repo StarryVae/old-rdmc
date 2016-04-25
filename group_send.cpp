@@ -174,16 +174,16 @@ void group::receive_block(uint32_t send_imm, size_t received_block_size) {
 void group::receive_ready_for_block(uint32_t step, uint32_t sender) {
     unique_lock<mutex> lock(monitor);
 
-    receivers_ready.insert(sender);
-    
-    if(!sending && mr) {
-        send_next_block();
-    }
-    
     auto it = rfb_queue_pairs.find(sender);
     assert(it != rfb_queue_pairs.end());
     it->second.post_empty_recv(
         form_tag(group_number, sender, MessageType::READY_FOR_BLOCK));
+
+    receivers_ready.insert(sender);
+    
+    if(!sending && mr) {
+        send_next_block();
+    }    
 }
 void group::complete_block_send() {
     unique_lock<mutex> lock(monitor);

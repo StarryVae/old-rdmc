@@ -84,7 +84,7 @@ static int modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn,
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;
-    attr.min_rnr_timer = 12;
+    attr.min_rnr_timer = 16;
     attr.ah_attr.is_global = 1;
     attr.ah_attr.dlid = dlid;
     attr.ah_attr.sl = 0;
