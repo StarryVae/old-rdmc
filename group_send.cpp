@@ -376,10 +376,12 @@ void group::post_recv(block_transfer transfer) {
 void group::connect(size_t neighbor) {
     queue_pairs.emplace(neighbor, queue_pair(members[neighbor]));
 
-    auto it = rfb_queue_pairs.emplace(neighbor,
-									  queue_pair(members[neighbor])).first;
-    it->second.post_empty_recv(
-        form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK));
+    auto post_recv = [this, neighbor](rdma::queue_pair* qp) {
+        qp->post_empty_recv(
+            form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK));
+    };
+
+    rfb_queue_pairs.emplace(neighbor, queue_pair(members[neighbor], post_recv));
 }
 
 void group::send_ready_for_block(uint32_t neighbor){

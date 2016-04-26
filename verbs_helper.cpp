@@ -84,7 +84,7 @@ static int modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn,
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;
-    attr.min_rnr_timer = 16;
+    attr.min_rnr_timer = 12;
     attr.ah_attr.is_global = 1;
     attr.ah_attr.dlid = dlid;
     attr.ah_attr.sl = 0;
@@ -113,8 +113,8 @@ static int modify_qp_to_rts(struct ibv_qp *qp) {
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTS;
     attr.timeout = 4;
-    attr.retry_cnt = 6;
-    attr.rnr_retry = 6;
+    attr.retry_cnt = 0;
+    attr.rnr_retry = 0;
     attr.sq_psn = 0;
     attr.max_rd_atomic = 1;
     flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
@@ -379,8 +379,15 @@ uint32_t memory_region::get_rkey() const { return mr->rkey; }
 queue_pair::~queue_pair() {
 	//    if(qp) cout << "Destroying Queue Pair..." << endl;
 }
-queue_pair::queue_pair(size_t remote_index) {
-	auto it = sockets.find(remote_index);
+queue_pair::queue_pair(size_t remote_index)
+    : queue_pair(remote_index, [](queue_pair*) {}) {}
+
+// The post_recvs lambda will be called before queue_pair creation completes on
+// either end of the connection. This enables the user to avoid race conditions
+// between post_send() and post_recv().
+queue_pair::queue_pair(size_t remote_index,
+                       std::function<void(queue_pair *)> post_recvs) {
+    auto it = sockets.find(remote_index);
 	if(it == sockets.end())
 		throw rdma::invalid_args();
 	
@@ -445,6 +452,8 @@ queue_pair::queue_pair(size_t remote_index) {
     if(!success)
         printf("Failed to initialize QP\n");
 
+	post_recvs(this);
+	
     /* sync to make sure that both sides are in states that they can connect to
    * prevent packet loss */
     /* just send a dummy char back and forth */
