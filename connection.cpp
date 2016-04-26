@@ -22,7 +22,7 @@ socket::socket(string servername, int port) {
 	if(server == nullptr) throw connection_failure();
 
 	char server_ip_cstr[server->h_length];
-	inet_ntop(AF_INET, server->h_addr, server_ip_cstr, sizeof(server_ip_cstr));
+	inet_ntop(AF_INET, server->h_addr, server_ip_cstr, server->h_length);
 	remote_ip = string(server_ip_cstr);
 
     sockaddr_in serv_addr;
@@ -66,7 +66,7 @@ bool socket::read(char *buffer, size_t size) {
     return true;
 }
 
-bool socket::write(char *buffer, size_t size) {
+bool socket::write(const char *buffer, size_t size) {
     if (sock < 0) {
 		fprintf(stderr, "WARNING: Attempted to write to closed socket\n");
         return false;
