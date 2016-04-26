@@ -15,11 +15,14 @@ namespace tcp{
     class socket{
         int sock;
         
-        explicit socket(int _sock): sock(_sock) {}
+        explicit socket(int _sock): sock(_sock), remote_ip() {}
+        explicit socket(int _sock, std::string remote_ip) : sock(_sock), remote_ip(remote_ip) {}
 
         friend class connection_listener;
     public:
-        socket() : sock(-1) {}
+        std::string remote_ip;
+
+        socket() : sock(-1), remote_ip() {}
         socket(std::string servername, int port);
         socket(socket&& s);
 
@@ -30,7 +33,7 @@ namespace tcp{
 
             
         bool read(char* buffer, size_t size);
-        bool write(char* buffer, size_t size);
+        bool write(char const * buffer, size_t size);
 
         template <class T>
         bool exchange(T local, T& remote) {

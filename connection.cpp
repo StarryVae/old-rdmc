@@ -21,6 +21,10 @@ socket::socket(string servername, int port) {
     server = gethostbyname(servername.c_str());
 	if(server == nullptr) throw connection_failure();
 
+	char server_ip_cstr[server->h_length];
+	inet_ntop(AF_INET, server->h_addr, server_ip_cstr, sizeof(server_ip_cstr));
+	remote_ip = string(server_ip_cstr);
+
     sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
@@ -36,6 +40,7 @@ socket::socket(socket &&s) : sock(s.sock) { s.sock = -1; }
 socket &socket::operator=(socket &&s) {
     sock = s.sock;
     s.sock = -1;
+    remote_ip = std::move(s.remote_ip);
     return *this;
 }
 
@@ -93,9 +98,23 @@ connection_listener::connection_listener(int port) {
 }
 
 socket connection_listener::accept() {
-    int sock = ::accept(*fd, NULL, 0);
+    char client_ip_cstr[INET6_ADDRSTRLEN + 1];
+    struct sockaddr_storage client_addr_info;
+    socklen_t len = sizeof client_addr_info;
+
+    int sock = ::accept(*fd, (struct sockaddr*)&client_addr_info, &len);
 	if(sock < 0) throw connection_failure();
 
-    return socket(sock);
+	if (client_addr_info.ss_family == AF_INET) {
+	    //Client has an IPv4 address
+	    struct sockaddr_in *s = (struct sockaddr_in *)&client_addr_info;
+	    inet_ntop(AF_INET, &s->sin_addr, client_ip_cstr, sizeof client_ip_cstr);
+	} else { // AF_INET6
+	    //Client has an IPv6 address
+	    struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr_info;
+	    inet_ntop(AF_INET6, &s->sin6_addr, client_ip_cstr, sizeof client_ip_cstr);
+	}
+
+    return socket(sock, std::string(client_ip_cstr));
 }
 }
