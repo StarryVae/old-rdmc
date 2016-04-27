@@ -49,6 +49,7 @@ class queue_pair {
 public:
 	~queue_pair();
     explicit queue_pair(size_t remote_index);
+	queue_pair(size_t remote_index, std::function<void(queue_pair*)> post_recvs);
 	queue_pair(queue_pair&&) = default;
     bool post_send(const memory_region& mr, size_t offset, size_t length,
                    uint64_t wr_id, uint32_t immediate);
