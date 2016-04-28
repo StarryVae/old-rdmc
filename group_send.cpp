@@ -357,17 +357,19 @@ void group::post_recv(block_transfer transfer) {
     // fflush(stdout);
 
     if(first_block_number && transfer.block_number == *first_block_number) {
-        assert(it->second.post_recv(
+        bool ret = it->second.post_recv(
             *first_block_mr, 0, block_size,
-            form_tag(group_number, transfer.target, MessageType::DATA_BLOCK)));
+            form_tag(group_number, transfer.target, MessageType::DATA_BLOCK));
+        assert(ret);
     } else {
         size_t offset = block_size * transfer.block_number;
         size_t length = min(block_size, (size_t)(message_size - offset));
 
         if(length > 0) {
-            assert(it->second.post_recv(*mr, mr_offset + offset, length,
-                                        form_tag(group_number, transfer.target,
-                                                 MessageType::DATA_BLOCK)));
+            bool ret = it->second.post_recv(*mr, mr_offset + offset, length,
+                                     form_tag(group_number, transfer.target,
+                                              MessageType::DATA_BLOCK));
+            assert(ret);
         }
     }
     LOG_EVENT(group_number, message_number, transfer.block_number,
