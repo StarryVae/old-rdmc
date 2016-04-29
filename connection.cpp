@@ -48,6 +48,10 @@ socket::~socket() {
     if(sock >= 0) close(sock);
 }
 
+bool socket::is_empty() {
+    return sock == -1;
+}
+
 bool socket::read(char *buffer, size_t size) {
     if(sock < 0){
 		fprintf(stderr, "WARNING: Attempted to read from closed socket\n");
@@ -56,9 +60,9 @@ bool socket::read(char *buffer, size_t size) {
 	
     size_t total_bytes = 0;
     while(total_bytes < size) {
-        size_t new_bytes =
+        ssize_t new_bytes =
             ::read(sock, buffer + total_bytes, size - total_bytes);
-        if(new_bytes > 0)
+        if(new_bytes >= 0)
             total_bytes += new_bytes;
         else
             return false;
@@ -72,7 +76,16 @@ bool socket::write(const char *buffer, size_t size) {
         return false;
     }
 
-    return ::write(sock, buffer, size) == (ssize_t)size;
+    size_t total_bytes = 0;
+    while(total_bytes < size) {
+        ssize_t bytes_written = ::write(sock, buffer + total_bytes, size - total_bytes);
+        if(bytes_written >= 0) {
+            total_bytes += bytes_written;
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 connection_listener::connection_listener(int port) {

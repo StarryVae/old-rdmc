@@ -31,6 +31,8 @@ namespace tcp{
 
         ~socket();
 
+        bool is_empty();
+
             
         bool read(char* buffer, size_t size);
         bool write(char const * buffer, size_t size);
