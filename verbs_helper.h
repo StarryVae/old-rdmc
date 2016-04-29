@@ -14,7 +14,7 @@
 struct ibv_mr;
 struct ibv_qp;
 
-namespace rdma{
+namespace rdma {
 class exception {};
 class invalid_args : public exception {};
 class connection_broken : public exception {};
@@ -27,8 +27,8 @@ class memory_region {
 
 public:
     memory_region(char* buffer, size_t size);
-	uint32_t get_rkey() const;
-		
+    uint32_t get_rkey() const;
+
     char* const buffer;
     const size_t size;
 };
@@ -40,17 +40,18 @@ public:
 
     const uint64_t buffer;
     const size_t size;
-	const uint32_t rkey;
+    const uint32_t rkey;
 };
 
 class queue_pair {
     std::unique_ptr<ibv_qp, std::function<void(ibv_qp*)>> qp;
 
 public:
-	~queue_pair();
+    ~queue_pair();
     explicit queue_pair(size_t remote_index);
-	queue_pair(size_t remote_index, std::function<void(queue_pair*)> post_recvs);
-	queue_pair(queue_pair&&) = default;
+    queue_pair(size_t remote_index,
+               std::function<void(queue_pair*)> post_recvs);
+    queue_pair(queue_pair&&) = default;
     bool post_send(const memory_region& mr, size_t offset, size_t length,
                    uint64_t wr_id, uint32_t immediate);
     bool post_recv(const memory_region& mr, size_t offset, size_t length,

@@ -53,59 +53,56 @@ void put_flush(const char *str) {
 
 // Attempts to init environment using slurm and returns whether it was
 // successful.
-bool slurm_query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank)
-{
+bool slurm_query_addresses(map<uint32_t, string> &addresses,
+                           uint32_t &node_rank) {
 #ifdef USE_SLURM
     char *nodeid_ptr = getenv("SLURM_NODEID");
     char *nnodes_ptr = getenv("SLURM_NNODES");
-    char* hostnames = getenv("SLURM_JOB_NODELIST");
-	if(!nodeid_ptr || !nnodes_ptr || !hostnames)
-		return false;
-	
-	hostlist_t hostlist = slurm_hostlist_create(hostnames);
-	if(!hostlist)
-	    return false;
+    char *hostnames = getenv("SLURM_JOB_NODELIST");
+    if(!nodeid_ptr || !nnodes_ptr || !hostnames) return false;
 
-	char* host;
-	uint32_t i = 0;
-	while((host = slurm_hostlist_shift(hostlist))){
-	    addresses.emplace(i++, host);
-	}
+    hostlist_t hostlist = slurm_hostlist_create(hostnames);
+    if(!hostlist) return false;
+
+    char *host;
+    uint32_t i = 0;
+    while((host = slurm_hostlist_shift(hostlist))) {
+        addresses.emplace(i++, host);
+    }
 
     slurm_hostlist_destroy(hostlist);
 
-	node_rank = lexical_cast<uint32_t>(string(nodeid_ptr));
-	uint32_t num_nodes = lexical_cast<uint32_t>(string(nnodes_ptr));
+    node_rank = lexical_cast<uint32_t>(string(nodeid_ptr));
+    uint32_t num_nodes = lexical_cast<uint32_t>(string(nnodes_ptr));
 
-	assert(addresses.size() == num_nodes);
-	assert(node_rank < num_nodes);
-	return true;
+    assert(addresses.size() == num_nodes);
+    assert(node_rank < num_nodes);
+    return true;
 #else
-	return false;
+    return false;
 #endif
 }
 
 void query_addresses(map<uint32_t, string> &addresses, uint32_t &node_rank) {
-	if(slurm_query_addresses(addresses, node_rank))
-		return;
-	
-	uint32_t num_nodes;
-	cout << "Please enter '[node_rank] [num_nodes]': ";
-	cin >> node_rank >> num_nodes;
+    if(slurm_query_addresses(addresses, node_rank)) return;
 
-	string addr;
-	for(uint32_t i = 0; i < num_nodes; ++i) {
-		// input the connection information here
-		cout << "Please enter IP Address for node " << i << ": ";
-		cin >> addr;
-		addresses.emplace(i, addr);
-	}
+    uint32_t num_nodes;
+    cout << "Please enter '[node_rank] [num_nodes]': ";
+    cin >> node_rank >> num_nodes;
+
+    string addr;
+    for(uint32_t i = 0; i < num_nodes; ++i) {
+        // input the connection information here
+        cout << "Please enter IP Address for node " << i << ": ";
+        cin >> addr;
+        addresses.emplace(i, addr);
+    }
 }
 
 void reset_epoch() {
-	LOG_EVENT(-1,-1,-1, "begin_epoch_reset");
-	epoch_start = get_time();
-	LOG_EVENT(-1,-1,-1, "end_epoch_reset");
+    LOG_EVENT(-1, -1, -1, "begin_epoch_reset");
+    epoch_start = get_time();
+    LOG_EVENT(-1, -1, -1, "end_epoch_reset");
 }
 
 double compute_mean(std::vector<double> v) {
@@ -120,7 +117,7 @@ double compute_stddev(std::vector<double> v) {
 
 vector<event> events;
 std::mutex events_mutex;
-void start_flush_server(){
+void start_flush_server() {
     auto flush_server = []() {
         while(true) {
             flush_events();
@@ -133,12 +130,11 @@ void start_flush_server(){
 void flush_events() {
     std::unique_lock<std::mutex> lock(events_mutex);
 
-	auto basename = [](const char *path) {
-		const char *base = strrchr(path, '/');
-		return base ? base + 1 : path;
-	};
+    auto basename = [](const char *path) {
+        const char *base = strrchr(path, '/');
+        return base ? base + 1 : path;
+    };
 
-	
     static bool print_header = true;
     if(print_header) {
         printf(
@@ -152,20 +148,20 @@ void flush_events() {
                    basename(e.file), e.line, e.event_name);
 
         } else if(e.message_number == (size_t)(-1)) {
-			printf("%5.3f, %s:%d, %s, %" PRIu32 "\n",
-				   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
-				   e.event_name, e.group_number);
+            printf("%5.3f, %s:%d, %s, %" PRIu32 "\n",
+                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
+                   e.event_name, e.group_number);
 
         } else if(e.block_number == (size_t)(-1)) {
-			printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu\n",
-				   1.0e-6 * (e.time - epoch_start), basename(e.file),
-				   e.line, e.event_name, e.group_number, e.message_number);
+            printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu\n",
+                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
+                   e.event_name, e.group_number, e.message_number);
 
         } else {
             printf("%5.3f, %s:%d, %s, %" PRIu32 ", %zu, %zu\n",
-				   1.0e-6 * (e.time - epoch_start), basename(e.file),
-				   e.line, e.event_name, e.group_number, e.message_number,
-				   e.block_number);
+                   1.0e-6 * (e.time - epoch_start), basename(e.file), e.line,
+                   e.event_name, e.group_number, e.message_number,
+                   e.block_number);
         }
     }
     fflush(stdout);

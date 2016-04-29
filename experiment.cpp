@@ -64,7 +64,6 @@ unique_ptr<rdmc::barrier_group> universal_barrier_group;
 send_stats measure_multicast(size_t size, size_t block_size,
                              uint32_t group_size, size_t iterations,
                              rdmc::send_algorithm type = rdmc::BINOMIAL_SEND) {
-
     if(node_rank >= group_size) {
         // Each iteration involves three barriers: one at the start and two at
         // the end.
@@ -73,13 +72,13 @@ send_stats measure_multicast(size_t size, size_t block_size,
         }
 
         return send_stats();
-    } 
+    }
 
-	std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
+    std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
         group_size, block_size, type);
 
-	size_t num_blocks = (size-1) / block_size + 1;
-	size_t buffer_size = num_blocks * block_size;
+    size_t num_blocks = (size - 1) / block_size + 1;
+    size_t buffer_size = num_blocks * block_size;
     unique_ptr<char[]> buffer(new char[buffer_size]);
     //    memset(buffer.get(), 1, size);
     //    memset(buffer.get(), 0, size);
@@ -104,9 +103,9 @@ send_stats measure_multicast(size_t size, size_t block_size,
                 LOG_EVENT(-1, -1, -1, "stop_send_timer");
                 send_done_cv.notify_all();
             },
-			[group_number = next_group_number](optional<uint32_t>){
-				LOG_EVENT(group_number, -1, -1, "send_failed");
-			});
+            [group_number = next_group_number](optional<uint32_t>) {
+                LOG_EVENT(group_number, -1, -1, "send_failed");
+            });
         LOG_EVENT(-1, -1, -1, "group_created");
         send_groups.emplace(send_params, next_group_number++);
     }
@@ -116,7 +115,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
     vector<double> rates;
     vector<double> times;
 
-	if(node_rank > 0) {
+    if(node_rank > 0) {
         for(size_t i = 0; i < iterations; i++) {
             send_completion_time = 0;
             // rdmc::post_receive_buffer(group_number, buffer, size);
@@ -126,8 +125,8 @@ send_stats measure_multicast(size_t size, size_t block_size,
             uint64_t start_time = get_time();
 
             unique_lock<mutex> lk(send_mutex);
-            while(send_completion_time == 0)
-                /* do nothing*/;
+            while(send_completion_time == 0) /* do nothing*/
+                ;
             // send_done_cv.wait(lk, [&] { return send_completion_time != 0; });
             LOG_EVENT(-1, -1, -1, "completion_reported");
             // uint64_t t1 = get_time();
@@ -139,7 +138,8 @@ send_stats measure_multicast(size_t size, size_t block_size,
             // Compute time taken by send, but subtract out time spend in
             // barrier and transfering control from callback thread.
             uint64_t dt =
-                t2 - start_time /*- (t3 - t2)*/ /*- (send_completion_time - t1)*/;
+                t2 -
+                start_time /*- (t3 - t2)*/ /*- (send_completion_time - t1)*/;
 
             rates.push_back(8.0 * size / dt);
             times.push_back(1.0e-6 * dt);
@@ -182,8 +182,8 @@ send_stats measure_multicast(size_t size, size_t block_size,
             rdmc::send(group_number, mr, 0, size);
 
             unique_lock<mutex> lk(send_mutex);
-            while(send_completion_time == 0)
-                /* do nothing*/;
+            while(send_completion_time == 0) /* do nothing*/
+                ;
             // send_done_cv.wait(lk, [&] { return send_completion_time != 0; });
             LOG_EVENT(-1, -1, -1, "completion_reported");
 
@@ -196,7 +196,8 @@ send_stats measure_multicast(size_t size, size_t block_size,
             // Compute time taken by send, but subtract out time spend in
             // barrier and transfering control from callback thread.
             uint64_t dt =
-                t2 - start_time /*- (t3 - t2)*/ /*- (send_completion_time - t1)*/;
+                t2 -
+                start_time /*- (t3 - t2)*/ /*- (send_completion_time - t1)*/;
             rates.push_back(8.0 * size / dt);
             times.push_back(1.0e-6 * dt);
         }
@@ -226,14 +227,14 @@ send_stats measure_concurrent_multicast(
         }
 
         return send_stats();
-    } 
+    }
 
     unique_ptr<char[]> buffer(new char[size * group_size]);
     shared_ptr<memory_region> mr =
         make_shared<memory_region>(buffer.get(), size * group_size);
-	
-	uint16_t base_group_number = next_group_number;
-	atomic<uint32_t> sends_remaining;
+
+    uint16_t base_group_number = next_group_number;
+    atomic<uint32_t> sends_remaining;
 
     for(uint16_t i = 0u; i < group_size; i++) {
         vector<uint32_t> members;
@@ -253,12 +254,12 @@ send_stats measure_concurrent_multicast(
                 if(--sends_remaining == 0) {
                     send_completion_time = get_time();
                     LOG_EVENT(-1, -1, -1, "stop_send_timer");
-                    //send_done_cv.notify_all();
+                    // send_done_cv.notify_all();
                 }
             },
-			[group_number = base_group_number + i](optional<uint32_t>){
-				LOG_EVENT(group_number, -1, -1, "send_failed");
-			});
+            [group_number = base_group_number + i](optional<uint32_t>) {
+                LOG_EVENT(group_number, -1, -1, "send_failed");
+            });
         LOG_EVENT(-1, -1, -1, "group_created");
     }
 
@@ -280,7 +281,8 @@ send_stats measure_concurrent_multicast(
 
         rdmc::send(base_group_number + node_rank, mr, size * node_rank, size);
 
-        while(send_completion_time == 0) /* do nothing*/;
+        while(send_completion_time == 0) /* do nothing*/
+            ;
         LOG_EVENT(-1, -1, -1, "completion_reported");
         // uint64_t t1 = get_time();
         universal_barrier_group->barrier_wait();
@@ -316,7 +318,8 @@ send_stats measure_concurrent_multicast(
 }
 
 // send_stats measure_small_multicast(size_t size, uint16_t group_size,
-//                                    size_t iterations, size_t concurrent_sends) {
+//                                    size_t iterations, size_t
+//                                    concurrent_sends) {
 //     std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
 //         group_size, 1 << 20, rdmc::BINOMIAL_SEND);
 //     if(send_groups.count(send_params) == 0) {
@@ -363,7 +366,8 @@ send_stats measure_concurrent_multicast(
 //             uint64_t start_time = get_time();
 
 //             unique_lock<mutex> lk(small_send_mutex);
-//             small_send_done_cv.wait(lk, [&] { return small_sends_left == 0; });
+//             small_send_done_cv.wait(lk, [&] { return small_sends_left == 0;
+//             });
 
 //             //            universal_barrier_group->barrier_wait();
 //             uint64_t end_time = get_time();
@@ -403,10 +407,12 @@ send_stats measure_concurrent_multicast(
 //             uint64_t start_time = get_time();
 
 //             for(size_t i = 0; i < concurrent_sends; i++)
-//                 rdmc::small_send(group_number, buffer.get() + i * size, size);
+//                 rdmc::small_send(group_number, buffer.get() + i * size,
+//                 size);
 
 //             // unique_lock<mutex> lk(small_send_mutex);
-//             // small_send_done_cv.wait(lk, [&]{return small_sends_left == 0;});
+//             // small_send_done_cv.wait(lk, [&]{return small_sends_left ==
+//             0;});
 
 //             //            universal_barrier_group->barrier_wait();
 //             uint64_t end_time = get_time();
@@ -498,13 +504,16 @@ void compare_send_types() {
     puts("=========================================================");
     puts(
         "Group Size,"
-		"Binomial Pipeline (256 MB),Chain Send (256 MB),Sequential Send (256 MB),Tree Send (256 MB),"
-        "Binomial Pipeline (64 MB),Chain Send (64 MB),Sequential Send (64 MB),Tree Send (64 MB),"
-        "Binomial Pipeline (8 MB),Chain Send (8 MB),Sequential Send (8 MB),Tree Send (8 MB),");
+        "Binomial Pipeline (256 MB),Chain Send (256 MB),Sequential Send (256 "
+        "MB),Tree Send (256 MB),"
+        "Binomial Pipeline (64 MB),Chain Send (64 MB),Sequential Send (64 "
+        "MB),Tree Send (64 MB),"
+        "Binomial Pipeline (8 MB),Chain Send (8 MB),Sequential Send (8 "
+        "MB),Tree Send (8 MB),");
     fflush(stdout);
 
     const size_t block_size = 1 << 20;
-	const size_t iterations = 64;
+    const size_t iterations = 64;
     for(int gsize = num_nodes; gsize >= 2; --gsize) {
         auto bp8 = measure_multicast(8 << 20, block_size, gsize, iterations,
                                      rdmc::BINOMIAL_SEND);
@@ -533,21 +542,23 @@ void compare_send_types() {
         printf(
             "%d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, "
             "%f, %f, %f, %f, %f, %f, %f, %f, %f\n",
-            gsize,
-			bp256.bandwidth.mean, cs256.bandwidth.mean, ss256.bandwidth.mean, ts256.bandwidth.mean,
-            bp64.bandwidth.mean, cs64.bandwidth.mean, ss64.bandwidth.mean, ts64.bandwidth.mean,
-            bp8.bandwidth.mean, cs8.bandwidth.mean, ss8.bandwidth.mean, ts8.bandwidth.mean,
-            bp256.bandwidth.stddev, cs256.bandwidth.stddev, ss256.bandwidth.stddev, ts256.bandwidth.stddev, 
-            bp64.bandwidth.stddev, cs64.bandwidth.stddev, ss64.bandwidth.stddev, ts64.bandwidth.stddev,
-			bp8.bandwidth.stddev, cs8.bandwidth.stddev, ss8.bandwidth.stddev, ts8.bandwidth.stddev);
+            gsize, bp256.bandwidth.mean, cs256.bandwidth.mean,
+            ss256.bandwidth.mean, ts256.bandwidth.mean, bp64.bandwidth.mean,
+            cs64.bandwidth.mean, ss64.bandwidth.mean, ts64.bandwidth.mean,
+            bp8.bandwidth.mean, cs8.bandwidth.mean, ss8.bandwidth.mean,
+            ts8.bandwidth.mean, bp256.bandwidth.stddev, cs256.bandwidth.stddev,
+            ss256.bandwidth.stddev, ts256.bandwidth.stddev,
+            bp64.bandwidth.stddev, cs64.bandwidth.stddev, ss64.bandwidth.stddev,
+            ts64.bandwidth.stddev, bp8.bandwidth.stddev, cs8.bandwidth.stddev,
+            ss8.bandwidth.stddev, ts8.bandwidth.stddev);
 
-            // ss256.bandwidth.mean, 0.0f /*ts256.bandwidth.mean*/,
-            // bp64.bandwidth.mean, cs64.bandwidth.mean, ss64.bandwidth.mean,
-            // 0.0f /*ts64.bandwidth.mean*/, bp256.bandwidth.stddev,
-            // cs256.bandwidth.stddev, ss256.bandwidth.stddev,
-            // 0.0f /*ts256.bandwidth.stddev*/, bp64.bandwidth.stddev,
-            // cs64.bandwidth.stddev, ss64.bandwidth.stddev,
-            // 0.0f /*ts64.bandwidth.stddev*/);
+        // ss256.bandwidth.mean, 0.0f /*ts256.bandwidth.mean*/,
+        // bp64.bandwidth.mean, cs64.bandwidth.mean, ss64.bandwidth.mean,
+        // 0.0f /*ts64.bandwidth.mean*/, bp256.bandwidth.stddev,
+        // cs256.bandwidth.stddev, ss256.bandwidth.stddev,
+        // 0.0f /*ts256.bandwidth.stddev*/, bp64.bandwidth.stddev,
+        // cs64.bandwidth.stddev, ss64.bandwidth.stddev,
+        // 0.0f /*ts64.bandwidth.stddev*/);
         fflush(stdout);
     }
     puts("");
@@ -569,8 +580,8 @@ void bandwidth_group_size() {
                                       rdmc::BINOMIAL_SEND);
         auto bp16 = measure_multicast(16 << 20, 1 << 20, gsize, 64,
                                       rdmc::BINOMIAL_SEND);
-        auto bp4 = measure_multicast(4 << 20, 1 << 20, gsize, 64,
-                                     rdmc::BINOMIAL_SEND);
+        auto bp4 =
+            measure_multicast(4 << 20, 1 << 20, gsize, 64, rdmc::BINOMIAL_SEND);
         printf("%d, %f, %f, %f, %f, %f, %f, %f, %f\n", gsize,
                bp256.bandwidth.mean, bp64.bandwidth.mean, bp16.bandwidth.mean,
                bp4.bandwidth.mean, bp256.bandwidth.stddev,
@@ -592,13 +603,13 @@ void concurrent_bandwidth_group_size() {
 
     for(int gsize = num_nodes; gsize >= 2; --gsize) {
         auto bp256 = measure_concurrent_multicast(256 << 20, 1 << 20, gsize, 16,
-                                       rdmc::BINOMIAL_SEND);
+                                                  rdmc::BINOMIAL_SEND);
         auto bp64 = measure_concurrent_multicast(64 << 20, 1 << 20, gsize, 16,
-                                      rdmc::BINOMIAL_SEND);
+                                                 rdmc::BINOMIAL_SEND);
         auto bp16 = measure_concurrent_multicast(16 << 20, 1 << 20, gsize, 16,
-                                      rdmc::BINOMIAL_SEND);
+                                                 rdmc::BINOMIAL_SEND);
         auto bp4 = measure_concurrent_multicast(4 << 20, 1 << 20, gsize, 16,
-                                     rdmc::BINOMIAL_SEND);
+                                                rdmc::BINOMIAL_SEND);
         printf("%d, %f, %f, %f, %f, %f, %f, %f, %f\n", gsize,
                bp256.bandwidth.mean, bp64.bandwidth.mean, bp16.bandwidth.mean,
                bp4.bandwidth.mean, bp256.bandwidth.stddev,
@@ -608,7 +619,8 @@ void concurrent_bandwidth_group_size() {
     }
     puts("");
     fflush(stdout);
-}void latency_group_size() {
+}
+void latency_group_size() {
     puts("=========================================================");
     puts("=               Latency vs. Group Size                  =");
     puts("=========================================================");
@@ -617,8 +629,8 @@ void concurrent_bandwidth_group_size() {
         "64stddev,16stddev,4stddev,1stddev,256stddev");
     fflush(stdout);
 
-	size_t iterations = 10000;
-	
+    size_t iterations = 10000;
+
     for(int gsize = num_nodes; gsize >= 2; gsize /= 2) {
         auto bp64 = measure_multicast(64 << 10, 32 << 10, gsize, iterations,
                                       rdmc::BINOMIAL_SEND);
@@ -654,7 +666,8 @@ void concurrent_bandwidth_group_size() {
 //         auto bp1 = measure_small_multicast(1 << 10, gsize, 16, 512);
 //         auto bp256 = measure_small_multicast(256, gsize, 16, 512);
 //         printf("%d, %f, %f, %f, %f, %f, %f, %f, %f\n", gsize, bp16.time.mean,
-//                bp4.time.mean, bp1.time.mean, bp256.time.mean, bp16.time.stddev,
+//                bp4.time.mean, bp1.time.mean, bp256.time.mean,
+//                bp16.time.stddev,
 //                bp4.time.stddev, bp1.time.stddev, bp256.time.stddev);
 //         fflush(stdout);
 //     }
@@ -663,9 +676,9 @@ void concurrent_bandwidth_group_size() {
 // }
 void large_send() {
     LOG_EVENT(-1, -1, -1, "start_large_send");
-    auto s =
-        measure_multicast(16 << 20, 1 << 20, num_nodes, 16, rdmc::BINOMIAL_SEND);
-//    flush_events();
+    auto s = measure_multicast(16 << 20, 1 << 20, num_nodes, 16,
+                               rdmc::BINOMIAL_SEND);
+    //    flush_events();
     printf("Bandwidth = %f(%f) Gb/s\n", s.bandwidth.mean, s.bandwidth.stddev);
     printf("Latency = %f(%f) ms\n", s.time.mean, s.time.stddev);
     // uint64_t eTime = get_time();
@@ -676,7 +689,7 @@ void large_send() {
 void concurrent_send() {
     LOG_EVENT(-1, -1, -1, "start_concurrent_send");
     auto s = measure_concurrent_multicast(128 << 20, 1 << 20, num_nodes, 16);
-//    flush_events();
+    //    flush_events();
     printf("Bandwidth = %f(%f) Gb/s\n", s.bandwidth.mean, s.bandwidth.stddev);
     printf("Latency = %f(%f) ms\n", s.time.mean, s.time.stddev);
     // uint64_t eTime = get_time();
@@ -706,26 +719,25 @@ void test_pattern() {
             size_t total_steps = message_size + ceil(log2(group_size)) - 1;
             for(unsigned int step = 0; step < total_steps; step++) {
                 for(unsigned int node = 0; node < group_size; node++) {
-
-					// Compute the outgoing transfer for this node/step
+                    // Compute the outgoing transfer for this node/step
                     auto transfer = binomial_group::get_outgoing_transfer(
                         node, step, group_size, floor(log2(group_size)),
                         message_size, total_steps);
                     n++;
 
                     if(transfer) {
-						// See what the supposed sender is doing this step
+                        // See what the supposed sender is doing this step
                         auto reverse = binomial_group::get_incoming_transfer(
                             transfer->target, step, group_size,
                             floor(log2(group_size)), message_size, total_steps);
                         n++;
 
-						// Make sure the two nodes agree
+                        // Make sure the two nodes agree
                         if(!reverse) throw false;
                         if(transfer->block_number != reverse->block_number)
                             throw false;
 
-						// If we aren't the root sender, also check that the
+                        // If we aren't the root sender, also check that the
                         // node got this block on a past step.
                         if(node != 0) {
                             for(int s = step - 1; s >= 0; s--) {
@@ -746,14 +758,14 @@ void test_pattern() {
                         }
                     }
 
-					// Compute the incoming transfer for this node/step
-					transfer = binomial_group::get_incoming_transfer(
+                    // Compute the incoming transfer for this node/step
+                    transfer = binomial_group::get_incoming_transfer(
                         node, step, group_size, floor(log2(group_size)),
                         message_size, total_steps);
                     n++;
-					
+
                     if(transfer) {
-						// Again make sure the supposed receiver agrees
+                        // Again make sure the supposed receiver agrees
                         auto reverse = binomial_group::get_outgoing_transfer(
                             transfer->target, step, group_size,
                             floor(log2(group_size)), message_size, total_steps);
@@ -763,8 +775,8 @@ void test_pattern() {
                             throw false;
                         if(reverse->target != node) throw false;
 
-						// Make sure we don't already have the block we're
-						// getting.
+                        // Make sure we don't already have the block we're
+                        // getting.
                         for(int s = step - 1; s >= 0; s--) {
                             auto prev = binomial_group::get_incoming_transfer(
                                 node, s, group_size, floor(log2(group_size)),
@@ -779,18 +791,18 @@ void test_pattern() {
                 }
             }
 
-			// Make sure that all nodes get every block
+            // Make sure that all nodes get every block
             for(unsigned int node = 1; node < group_size; node++) {
                 set<size_t> blocks;
                 for(unsigned int step = 0; step < total_steps; step++) {
                     auto transfer = binomial_group::get_incoming_transfer(
                         node, step, group_size, floor(log2(group_size)),
-                        message_size, total_steps); n++;
+                        message_size, total_steps);
+                    n++;
 
                     if(transfer) blocks.insert(transfer->block_number);
                 }
-                if(blocks.size() != message_size)
-                    throw false;
+                if(blocks.size() != message_size) throw false;
             }
         }
     }
@@ -810,16 +822,16 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
-	LOG_EVENT(-1, -1, -1, "querying_addresses");
-	map<uint32_t, string> addresses;
-	query_addresses(addresses, node_rank);
-	num_nodes = addresses.size();
-	
+    LOG_EVENT(-1, -1, -1, "querying_addresses");
+    map<uint32_t, string> addresses;
+    query_addresses(addresses, node_rank);
+    num_nodes = addresses.size();
+
     LOG_EVENT(-1, -1, -1, "calling_init");
     assert(rdmc::initialize(addresses, node_rank));
 
     LOG_EVENT(-1, -1, -1, "creating_barrier_group");
-	vector<uint32_t> members;
+    vector<uint32_t> members;
     for(uint32_t i = 0; i < num_nodes; i++) members.push_back(i);
     universal_barrier_group = make_unique<rdmc::barrier_group>(members);
 
@@ -831,9 +843,10 @@ int main(int argc, char *argv[]) {
     universal_barrier_group->barrier_wait();
     uint64_t t3 = get_time();
 
-    printf("Synchronized clocks.\nTotal possible variation = %5.3f us\n"
-		   "Max possible variation from local = %5.3f us\n",
-		   (t3 - t1) * 1e-3f, max(t2 - t1, t3 - t2) * 1e-3f);
+    printf(
+        "Synchronized clocks.\nTotal possible variation = %5.3f us\n"
+        "Max possible variation from local = %5.3f us\n",
+        (t3 - t1) * 1e-3f, max(t2 - t1, t3 - t2) * 1e-3f);
     fflush(stdout);
 
     TRACE("Finished initializing.");
@@ -856,7 +869,7 @@ int main(int argc, char *argv[]) {
     } else if(strcmp(argv[1], "smallsend") == 0) {
         // small_send_latency_group_size();
     } else if(strcmp(argv[1], "concurrent") == 0) {
-		concurrent_bandwidth_group_size();
+        concurrent_bandwidth_group_size();
     } else {
         puts("Unrecognized experiment name.");
         fflush(stdout);

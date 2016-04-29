@@ -34,9 +34,8 @@ struct receive_destination {
 };
 
 typedef std::function<receive_destination(size_t size)>
-	incoming_message_callback_t;
-typedef std::function<void(char* buffer, size_t size)>
-    completion_callback_t;
+    incoming_message_callback_t;
+typedef std::function<void(char* buffer, size_t size)> completion_callback_t;
 typedef std::function<void(boost::optional<uint32_t> suspected_victim)>
     failure_callback_t;
 
@@ -58,33 +57,34 @@ bool send(uint16_t group_number, std::shared_ptr<rdma::memory_region> mr,
 class barrier_group {
     // Queue Pairs and associated remote memory regions used for performing a
     // barrier.
-	std::vector<rdma::queue_pair> queue_pairs;
-	std::vector<rdma::remote_memory_region> remote_memory_regions;
+    std::vector<rdma::queue_pair> queue_pairs;
+    std::vector<rdma::remote_memory_region> remote_memory_regions;
 
     // Additional queue pairs which will handle incoming writes (but which this
     // node does not need to interact with directly).
-	std::vector<rdma::queue_pair> extra_queue_pairs;
+    std::vector<rdma::queue_pair> extra_queue_pairs;
 
     // RDMA memory region used for doing the barrier
-	std::array<volatile int64_t, 32> steps;
-	std::unique_ptr<rdma::memory_region> steps_mr;
+    std::array<volatile int64_t, 32> steps;
+    std::unique_ptr<rdma::memory_region> steps_mr;
 
     // Current barrier number, and a memory region to issue writes from.
     volatile int64_t number = -1;
-	std::unique_ptr<rdma::memory_region> number_mr;
+    std::unique_ptr<rdma::memory_region> number_mr;
 
     // Number of steps per barrier.
     unsigned int total_steps;
 
     // Lock to ensure that only one barrier is in flight at a time.
-	std::mutex lock;
+    std::mutex lock;
 
-	// Index of this node in the list of members
-	uint32_t member_index;
-	uint32_t group_size;
- public:
-	barrier_group(std::vector<uint32_t> members);
-	void barrier_wait();
+    // Index of this node in the list of members
+    uint32_t member_index;
+    uint32_t group_size;
+
+public:
+    barrier_group(std::vector<uint32_t> members);
+    void barrier_wait();
 };
 };
 

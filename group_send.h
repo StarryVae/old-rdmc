@@ -24,7 +24,7 @@ using rdmc::completion_callback_t;
 
 class group {
 private:
-	const vector<uint32_t> members;  // first element is the sender
+    const vector<uint32_t> members;  // first element is the sender
 
     // Set of receivers who are ready to receive the next block from us.
     std::set<uint32_t> receivers_ready;
@@ -42,8 +42,8 @@ private:
     size_t message_number = 0;
 
     size_t outgoing_block;
-    bool sending = false;    // Whether a block send is in progress
-    size_t send_step = 0;    // Number of blocks sent/stalls so far
+    bool sending = false;  // Whether a block send is in progress
+    size_t send_step = 0;  // Number of blocks sent/stalls so far
 
     // Total number of blocks received and the number of chunks
     // received for ecah block, respectively.
@@ -57,10 +57,10 @@ private:
 protected:
     const uint16_t group_number;
     const size_t block_size;
-	const uint32_t num_members;
-    const uint32_t member_index;     // our index in the members list
+    const uint32_t num_members;
+    const uint32_t member_index;  // our index in the members list
     size_t num_blocks;
-	
+
     // maps from member_indices to the queue pairs
     map<size_t, rdma::queue_pair> queue_pairs;
     map<size_t, rdma::queue_pair> rfb_queue_pairs;
@@ -81,9 +81,9 @@ protected:
 
 public:
     group(uint16_t group_number, size_t block_size, vector<uint32_t> members,
-		  uint32_t member_index, incoming_message_callback_t upcall,
-		  completion_callback_t callback);
-	virtual ~group();
+          uint32_t member_index, incoming_message_callback_t upcall,
+          completion_callback_t callback);
+    virtual ~group();
 
     void receive_block(uint32_t send_imm, size_t size);
     void receive_ready_for_block(uint32_t step, uint32_t sender);

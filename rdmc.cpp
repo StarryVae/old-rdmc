@@ -53,28 +53,28 @@ map<uint16_t, shared_ptr<group> > groups;
 mutex groups_lock;
 
 static void main_loop() {
-	TRACE("Spawned main loop");
-	
+    TRACE("Spawned main loop");
+
     const int max_work_completions = 1024;
     unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
 
     while(true) {
-		int num_completions = 0;
-		while(!shutdown_flag && num_completions == 0) {
-            num_completions = ibv_poll_cq(::rdma::impl::verbs_get_cq(),
-										  max_work_completions,
-										  work_completions.get());
+        int num_completions = 0;
+        while(!shutdown_flag && num_completions == 0) {
+            num_completions =
+                ibv_poll_cq(::rdma::impl::verbs_get_cq(), max_work_completions,
+                            work_completions.get());
         }
 
         if(shutdown_flag) {
             groups.clear();
-			::rdma::impl::verbs_destroy();
-			return;
+            ::rdma::impl::verbs_destroy();
+            return;
         }
 
         if(num_completions < 0) {  // Negative indicates an IBV error.
-			fprintf(stderr, "ERROR: Failed to poll completion queue.");
-			continue;
+            fprintf(stderr, "ERROR: Failed to poll completion queue.");
+            continue;
         }
 
         for(int i = 0; i < num_completions; i++) {
@@ -93,18 +93,18 @@ static void main_loop() {
                     {
                         unique_lock<mutex> lock(groups_lock);
                         auto it = groups.find(tag.group_number);
-                        if(it == groups.end()){
+                        if(it == groups.end()) {
                             fprintf(stderr,
                                     "ERROR: Sent data block didn't belong to "
                                     "any group?!");
                             continue;
-						}
+                        }
                         g = it->second;
                     }
 
                     g->complete_block_send();
                 } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
-					// Do nothing
+                    // Do nothing
                 } else {
                     printf(
                         "sent unrecognized message type?! (message_type=%d)\n",
@@ -117,12 +117,12 @@ static void main_loop() {
                     {
                         unique_lock<mutex> lock(groups_lock);
                         auto it = groups.find(tag.group_number);
-                        if(it == groups.end()){
+                        if(it == groups.end()) {
                             fprintf(stderr,
                                     "ERROR: Received data block didn't belong "
                                     "to any group?!");
                             continue;
-						}
+                        }
                         g = it->second;
                     }
 
@@ -134,14 +134,14 @@ static void main_loop() {
                         unique_lock<mutex> lock(groups_lock);
                         auto it = groups.find(tag.group_number);
                         if(it != groups.end())
-							g = it->second;
-						else
-							TRACE("Got RFB for group not yet created...");
+                            g = it->second;
+                        else
+                            TRACE("Got RFB for group not yet created...");
                     }
 
-					if(g){
-						g->receive_ready_for_block(wc.imm_data, tag.target);
-					}
+                    if(g) {
+                        g->receive_ready_for_block(wc.imm_data, tag.target);
+                    }
                 } else {
                     printf(
                         "received message with unrecognized type, even though "
@@ -149,7 +149,7 @@ static void main_loop() {
                         (int)tag.message_type);
                 }
             } else if(wc.opcode == IBV_WC_RDMA_WRITE) {
-				// Do nothing
+                // Do nothing
             } else {
                 puts("Sent unrecognized completion type?!");
             }
@@ -161,55 +161,55 @@ bool initialize(const map<uint32_t, string>& addresses, uint32_t _node_rank) {
     if(shutdown_flag) return false;
 
     node_rank = _node_rank;
-	
-	TRACE("starting initialize");
-    if(!::rdma::impl::verbs_initialize(addresses, node_rank)){
-		return false;
-	}
+
+    TRACE("starting initialize");
+    if(!::rdma::impl::verbs_initialize(addresses, node_rank)) {
+        return false;
+    }
     TRACE("verbs initialized");
 
     thread t(main_loop);
     t.detach();
-	return true;
+    return true;
 }
 void add_address(uint32_t index, const string& address) {
-	::rdma::impl::verbs_add_connection(index, address, node_rank);
+    ::rdma::impl::verbs_add_connection(index, address, node_rank);
 }
 
 bool create_group(uint16_t group_number, std::vector<uint32_t> members,
                   size_t block_size, send_algorithm algorithm,
                   incoming_message_callback_t incoming_upcall,
                   completion_callback_t callback,
-				  failure_callback_t failure_callback) {
+                  failure_callback_t failure_callback) {
     if(shutdown_flag) return false;
 
     shared_ptr<group> g;
-	uint32_t member_index = index_of(members, node_rank);
+    uint32_t member_index = index_of(members, node_rank);
     if(algorithm == BINOMIAL_SEND) {
         g = make_shared<binomial_group>(group_number, block_size, members,
-										member_index, incoming_upcall,
-										callback);
+                                        member_index, incoming_upcall,
+                                        callback);
     } else if(algorithm == CHAIN_SEND) {
         g = make_shared<chain_group>(group_number, block_size, members,
                                      member_index, incoming_upcall, callback);
     } else if(algorithm == SEQUENTIAL_SEND) {
         g = make_shared<sequential_group>(group_number, block_size, members,
-										  member_index, incoming_upcall,
-										  callback);
+                                          member_index, incoming_upcall,
+                                          callback);
     } else if(algorithm == TREE_SEND) {
         g = make_shared<tree_group>(group_number, block_size, members,
                                     member_index, incoming_upcall, callback);
     } else {
         puts("Unsupported group type?!");
         fflush(stdout);
-		return false;
+        return false;
     }
 
     unique_lock<mutex> lock(groups_lock);
     auto p = groups.emplace(group_number, std::move(g));
     if(!p.second) return false;
     p.first->second->init();
-	return true;
+    return true;
 }
 
 void destroy_group(uint16_t group_number) {
@@ -219,37 +219,32 @@ void destroy_group(uint16_t group_number) {
     LOG_EVENT(group_number, -1, -1, "destroy_group");
     groups.erase(group_number);
 }
-void shutdown() {
-    shutdown_flag = true;
-}
+void shutdown() { shutdown_flag = true; }
 bool send(uint16_t group_number, shared_ptr<memory_region> mr, size_t offset,
           size_t length) {
-	if(shutdown_flag)
-		return false;
-	
+    if(shutdown_flag) return false;
+
     shared_ptr<group> g;
     {
         unique_lock<mutex> lock(groups_lock);
         auto it = groups.find(group_number);
-        if(it == groups.end())
-			return false;
+        if(it == groups.end()) return false;
         g = it->second;
     }
     LOG_EVENT(group_number, -1, -1, "preparing_to_send_message");
     g->send_message(mr, offset, length);
-	return true;
+    return true;
 }
 
 barrier_group::barrier_group(vector<uint32_t> members) {
-	member_index = index_of(members, node_rank);
-	group_size = members.size();
+    member_index = index_of(members, node_rank);
+    group_size = members.size();
 
-	if(group_size <= 1 || member_index >= members.size())
-		throw rdmc::invalid_args();
-	
+    if(group_size <= 1 || member_index >= members.size())
+        throw rdmc::invalid_args();
+
     total_steps = ceil(log2(group_size));
-    for(unsigned int m = 0; m < total_steps; m++)
-        steps[m] = -1;
+    for(unsigned int m = 0; m < total_steps; m++) steps[m] = -1;
 
     steps_mr = make_unique<memory_region>((char*)&steps[0],
                                           total_steps * sizeof(int64_t));
@@ -303,8 +298,8 @@ void barrier_group::barrier_wait() {
             throw rdmc::connection_broken();
         }
 
-        while(steps[m] < number)
-			/* do nothing*/;
+        while(steps[m] < number) /* do nothing*/
+            ;
     }
     LOG_EVENT(-1, -1, -1, "end_barrier");
 }
