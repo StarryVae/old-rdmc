@@ -1,8 +1,8 @@
 
+#include "rdmc.h"
 #include "group_send.h"
 #include "message.h"
 #include "microbenchmarks.h"
-#include "rdmc.h"
 #include "util.h"
 #include "verbs_helper.h"
 
@@ -21,13 +21,13 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <set>
 #include <sstream>
 #include <string>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <thread>
-#include <queue>
 #include <unistd.h>
 #include <vector>
 

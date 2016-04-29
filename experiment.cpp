@@ -1,19 +1,19 @@
 
-#include "util.h"
-#include "message.h"
-#include "verbs_helper.h"
-#include "rdmc.h"
-#include "microbenchmarks.h"
 #include "group_send.h"
+#include "message.h"
+#include "microbenchmarks.h"
+#include "rdmc.h"
+#include "util.h"
+#include "verbs_helper.h"
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
-#include <condition_variable>
+#include <chrono>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <chrono>
 #include <iostream>
 #include <memory>
 #include <mutex>

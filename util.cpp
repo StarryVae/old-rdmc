@@ -8,9 +8,9 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <thread>
 #include <sstream>
 #include <sys/stat.h>
+#include <thread>
 
 #ifdef USE_SLURM
 #include <slurm/slurm.h>

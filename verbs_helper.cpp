@@ -1,7 +1,7 @@
 
+#include "verbs_helper.h"
 #include "connection.h"
 #include "util.h"
-#include "verbs_helper.h"
 
 #include <arpa/inet.h>
 #include <byteswap.h>
@@ -10,8 +10,8 @@
 #include <getopt.h>
 #include <iostream>
 #include <netdb.h>
-#include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <vector>
 

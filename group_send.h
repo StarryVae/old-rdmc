@@ -2,18 +2,18 @@
 #ifndef GROUP_SEND_H
 #define GROUP_SEND_H
 
-#include "util.h"
-#include "rdmc.h"
 #include "message.h"
+#include "rdmc.h"
+#include "util.h"
 #include "verbs_helper.h"
 
 #include <boost/optional.hpp>
-#include <queue>
-#include <vector>
-#include <memory>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <queue>
 #include <set>
+#include <vector>
 
 using boost::optional;
 using std::vector;
