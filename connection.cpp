@@ -4,10 +4,12 @@
 #include <arpa/inet.h>
 #include <cassert>
 #include <cstring>
+#include <iostream>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <cerrno>
 
 namespace tcp {
 
@@ -34,10 +36,14 @@ socket::socket(string servername, int port) {
 
     while(connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         /* do nothing*/;
+    cout << "Successfully connected to " << servername << endl;
 }
-socket::socket(socket &&s) : sock(s.sock) { s.sock = -1; }
+socket::socket(socket&& s) : sock(s.sock), remote_ip(s.remote_ip) {
+    s.sock = -1;
+    s.remote_ip = std::string();
+}
 
-socket &socket::operator=(socket &&s) {
+socket &socket::operator=(socket&& s) {
     sock = s.sock;
     s.sock = -1;
     remote_ip = std::move(s.remote_ip);
@@ -62,8 +68,10 @@ bool socket::read(char *buffer, size_t size) {
             ::read(sock, buffer + total_bytes, size - total_bytes);
         if(new_bytes >= 0)
             total_bytes += new_bytes;
-        else
+        else {
+            cout << "Read error! Errno = " << errno << endl;
             return false;
+        }
     }
     return true;
 }
@@ -91,6 +99,7 @@ connection_listener::connection_listener(int port) {
     sockaddr_in serv_addr;
 
     int listenfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    cout << "connection_listener got server socket with fd=" << listenfd << endl;
     if(listenfd < 0) throw connection_failure();
 
     int reuse_addr = 1;
@@ -114,7 +123,9 @@ socket connection_listener::accept() {
     struct sockaddr_storage client_addr_info;
     socklen_t len = sizeof client_addr_info;
 
+    cout << "Server is about to block on accept()" << endl;
     int sock = ::accept(*fd, (struct sockaddr *)&client_addr_info, &len);
+    cout << "connection_listener accepted connection, return value was " << sock << endl;
     if(sock < 0) throw connection_failure();
 
     if(client_addr_info.ss_family == AF_INET) {
@@ -128,6 +139,7 @@ socket connection_listener::accept() {
                   sizeof client_ip_cstr);
     }
 
+    cout << "Server got a connection from client " << std::string(client_ip_cstr) << ", returning it." << endl;
     return socket(sock, std::string(client_ip_cstr));
 }
 }
