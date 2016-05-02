@@ -2,8 +2,7 @@
 #include "util.h"
 #include "verbs_helper.h"
 
-#include <boost/array.hpp>
-#include <boost/asio.hpp>
+#include <cassert>
 #include <cinttypes>
 #include <cstdint>
 #include <fstream>
