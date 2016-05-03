@@ -5,3 +5,5 @@ cmake_install.cmake
 librdmc.so
 CMakeFiles/*
 scripts/*
+/librdmc.a
+/script_copy.sh
