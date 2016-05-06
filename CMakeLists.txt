@@ -4,7 +4,7 @@ PROJECT(verbs-mcast CXX)
 SET(CMAKE_CXX_FLAGS "-std=c++14 -Wall -ggdb -gdwarf-3")
 
 ADD_LIBRARY(rdmc SHARED rdmc.cpp util.cpp group_send.cpp verbs_helper.cpp connection.cpp)
-TARGET_LINK_LIBRARIES(rdmc rdmacm ibverbs boost_system rt pthread)
+TARGET_LINK_LIBRARIES(rdmc rdmacm ibverbs rt pthread)
 
 find_library(SLURM_FOUND slurm)
 if (SLURM_FOUND)
