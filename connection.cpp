@@ -37,12 +37,12 @@ socket::socket(string servername, int port) {
     while(connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         /* do nothing*/;
 }
-socket::socket(socket&& s) : sock(s.sock), remote_ip(s.remote_ip) {
+socket::socket(socket &&s) : sock(s.sock), remote_ip(s.remote_ip) {
     s.sock = -1;
     s.remote_ip = std::string();
 }
 
-socket &socket::operator=(socket&& s) {
+socket &socket::operator=(socket &&s) {
     sock = s.sock;
     s.sock = -1;
     remote_ip = std::move(s.remote_ip);

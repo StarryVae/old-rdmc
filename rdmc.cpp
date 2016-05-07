@@ -133,10 +133,9 @@ static void main_loop() {
                     {
                         unique_lock<mutex> lock(groups_lock);
                         auto it = groups.find(tag.group_number);
-                        if(it != groups.end())
-                            g = it->second;
-                        else
-                            TRACE("Got RFB for group not yet created...");
+                        if(it != groups.end()) g = it->second;
+                        // else
+                        //     TRACE("Got RFB for group not yet created...");
                     }
 
                     if(g) {

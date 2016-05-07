@@ -39,7 +39,6 @@ struct send_stats {
 
     size_t size;
     size_t block_size;
-    size_t chunks_per_block;
     size_t group_size;
     size_t iterations;
 };
@@ -148,7 +147,6 @@ send_stats measure_multicast(size_t size, size_t block_size,
         send_stats s;
         s.size = size;
         s.block_size = block_size;
-        s.chunks_per_block = 1;
         s.group_size = group_size;
         s.iterations = iterations;
 
@@ -205,7 +203,6 @@ send_stats measure_multicast(size_t size, size_t block_size,
         send_stats s;
         s.size = size;
         s.block_size = block_size;
-        s.chunks_per_block = 1;
         s.group_size = group_size;
         s.iterations = iterations;
         s.time.mean = compute_mean(times);
@@ -216,6 +213,102 @@ send_stats measure_multicast(size_t size, size_t block_size,
         return s;
     }
 }
+send_stats measure_partially_concurrent_multicast(
+    size_t size, size_t block_size, uint32_t group_size, uint32_t num_senders,
+    size_t iterations, rdmc::send_algorithm type = rdmc::BINOMIAL_SEND) {
+    if(node_rank >= group_size) {
+        // Each iteration involves two barriers: one at the start and one at the
+        // end.
+        for(size_t i = 0; i < iterations * 2; i++) {
+            universal_barrier_group->barrier_wait();
+        }
+
+        return send_stats();
+    }
+
+    size_t num_blocks = (size - 1) / block_size + 1;
+    size_t buffer_size = num_blocks * block_size;
+    unique_ptr<char[]> buffer(new char[buffer_size * num_senders]);
+    shared_ptr<memory_region> mr =
+        make_shared<memory_region>(buffer.get(), buffer_size * num_senders);
+
+    uint16_t base_group_number = next_group_number;
+    atomic<uint32_t> sends_remaining;
+
+    for(uint16_t i = 0u; i < num_senders; i++) {
+        vector<uint32_t> members;
+        for(uint32_t j = 0; j < group_size; j++) {
+            members.push_back((j + i) % group_size);
+        }
+        LOG_EVENT(-1, -1, -1, "create_group");
+        rdmc::create_group(
+            base_group_number + i, members, block_size, type,
+            [&mr, i, buffer_size](size_t length) -> rdmc::receive_destination {
+                return {mr, buffer_size * i};
+            },
+            [&sends_remaining, i](char *data, size_t) {
+                LOG_EVENT(-1, -1, -1, "completion_callback");
+                if(--sends_remaining == 0) {
+                    send_completion_time = get_time();
+                    LOG_EVENT(-1, -1, -1, "stop_send_timer");
+                }
+            },
+            [group_number = base_group_number + i](optional<uint32_t>) {
+                LOG_EVENT(group_number, -1, -1, "send_failed");
+            });
+        LOG_EVENT(-1, -1, -1, "group_created");
+    }
+
+    vector<double> rates;
+    vector<double> times;
+
+    for(size_t i = 0; i < iterations; i++) {
+        send_completion_time = 0;
+        sends_remaining = num_senders;
+
+        if(node_rank < num_senders) {
+            for(size_t j = 0; j < size; j += 256)
+                buffer[node_rank * buffer_size + j] = (rand() >> 5) % 256;
+        }
+
+        universal_barrier_group->barrier_wait();
+
+        LOG_EVENT(-1, -1, -1, "start_send_timer");
+        uint64_t start_time = get_time();
+
+        if(node_rank < num_senders) {
+            rdmc::send(base_group_number + node_rank, mr,
+                       buffer_size * node_rank, size);
+        }
+
+        while(send_completion_time == 0) /* do nothing*/
+            ;
+        LOG_EVENT(-1, -1, -1, "completion_reported");
+
+        universal_barrier_group->barrier_wait();
+
+        uint64_t dt = get_time() - start_time;
+        rates.push_back(8.0 * size * num_senders / dt);
+        times.push_back(1.0e-6 * dt);
+    }
+
+    for(auto i = 0u; i < group_size; i++) {
+        rdmc::destroy_group(base_group_number + i);
+    }
+
+    send_stats s;
+    s.size = size;
+    s.block_size = block_size;
+    s.group_size = group_size;
+    s.iterations = iterations;
+
+    s.time.mean = compute_mean(times);
+    s.time.stddev = compute_stddev(times);
+    s.bandwidth.mean = compute_mean(rates);
+    s.bandwidth.stddev = compute_stddev(rates);
+    return s;
+}
+
 send_stats measure_concurrent_multicast(
     size_t size, size_t block_size, uint32_t group_size, size_t iterations,
     rdmc::send_algorithm type = rdmc::BINOMIAL_SEND) {
@@ -306,7 +399,6 @@ send_stats measure_concurrent_multicast(
     send_stats s;
     s.size = size;
     s.block_size = block_size;
-    s.chunks_per_block = 1;
     s.group_size = group_size;
     s.iterations = iterations;
 
@@ -316,131 +408,6 @@ send_stats measure_concurrent_multicast(
     s.bandwidth.stddev = compute_stddev(rates);
     return s;
 }
-
-// send_stats measure_small_multicast(size_t size, uint16_t group_size,
-//                                    size_t iterations, size_t
-//                                    concurrent_sends) {
-//     std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
-//         group_size, 1 << 20, rdmc::BINOMIAL_SEND);
-//     if(send_groups.count(send_params) == 0) {
-//         vector<uint16_t> members;
-//         for(uint16_t i = 0; i < group_size; i++) {
-//             members.push_back(i);
-//         }
-//         LOG_EVENT(-1, -1, -1, "create_group");
-//         rdmc::create_group(
-//             next_group_number, members, 1 << 20, rdmc::BINOMIAL_SEND,
-//             [&](size_t) -> rdmc::receive_destination {
-//                 assert(false && "Unimplemented");
-//             },
-//             [&](uint16_t, rdmc::completion_status, char *, size_t) {},
-//             [&](uint16_t group_number, rdmc::completion_status, char *,
-//                 size_t) {
-//                 if(--small_sends_left == 0) {
-//                     unique_lock<mutex> lk(small_send_mutex);
-//                     small_send_done_cv.notify_all();
-//                 }
-//             });
-//         LOG_EVENT(-1, -1, -1, "group_created");
-//         send_groups.emplace(send_params, next_group_number++);
-//     }
-
-//     uint16_t group_number = send_groups[send_params];
-
-//     vector<double> rates;
-//     vector<double> times;
-
-//     if(node_rank >= group_size) {
-//         for(size_t i = 0; i < iterations; i++) {
-//             universal_barrier_group->barrier_wait();
-//         }
-
-//         universal_barrier_group->barrier_wait();
-//         return send_stats();
-//     } else if(node_rank > 0) {
-//         for(size_t i = 0; i < iterations; i++) {
-//             small_sends_left = concurrent_sends;
-//             universal_barrier_group->barrier_wait();
-
-//             LOG_EVENT(-1, -1, -1, "start_small_send_timer");
-//             uint64_t start_time = get_time();
-
-//             unique_lock<mutex> lk(small_send_mutex);
-//             small_send_done_cv.wait(lk, [&] { return small_sends_left == 0;
-//             });
-
-//             //            universal_barrier_group->barrier_wait();
-//             uint64_t end_time = get_time();
-//             LOG_EVENT(-1, -1, -1, "stop_small_send_timer");
-
-//             rates.push_back(8.0 * size * concurrent_sends /
-//                             (end_time - start_time));
-//             times.push_back(1.0e-6 * (end_time - start_time) /
-//                             concurrent_sends);
-//         }
-
-//         send_stats s;
-//         s.size = size;
-//         s.block_size = 1 << 20;
-//         s.chunks_per_block = 1;
-//         s.group_size = group_size;
-//         s.iterations = iterations;
-
-//         s.time.mean = compute_mean(times);
-//         s.time.stddev = compute_stddev(times);
-//         s.bandwidth.mean = compute_mean(rates);
-//         s.bandwidth.stddev = compute_stddev(rates);
-
-//         universal_barrier_group->barrier_wait();
-//         return s;
-//     } else {
-//         for(size_t i = 0; i < iterations; i++) {
-//             unique_ptr<char[]> buffer(new char[size * concurrent_sends]);
-
-//             for(size_t i = 0; i < size * concurrent_sends; i++)
-//                 buffer[i] = (rand() >> 5) % 256;
-
-//             small_sends_left = concurrent_sends * group_size;
-//             universal_barrier_group->barrier_wait();
-
-//             LOG_EVENT(-1, -1, -1, "start_small_send_timer");
-//             uint64_t start_time = get_time();
-
-//             for(size_t i = 0; i < concurrent_sends; i++)
-//                 rdmc::small_send(group_number, buffer.get() + i * size,
-//                 size);
-
-//             // unique_lock<mutex> lk(small_send_mutex);
-//             // small_send_done_cv.wait(lk, [&]{return small_sends_left ==
-//             0;});
-
-//             //            universal_barrier_group->barrier_wait();
-//             uint64_t end_time = get_time();
-//             LOG_EVENT(-1, -1, -1, "stop_small_send_timer");
-
-//             LOG_EVENT(-1, -1, -1, "completion_reported");
-
-//             rates.push_back(8.0 * size * concurrent_sends /
-//                             (end_time - start_time));
-//             times.push_back(1.0e-6 * (end_time - start_time) /
-//                             concurrent_sends);
-//         }
-
-//         send_stats s;
-//         s.size = size;
-//         s.block_size = 1 << 20;
-//         s.chunks_per_block = 1;
-//         s.group_size = group_size;
-//         s.iterations = iterations;
-//         s.time.mean = compute_mean(times);
-//         s.time.stddev = compute_stddev(times);
-//         s.bandwidth.mean = compute_mean(rates);
-//         s.bandwidth.stddev = compute_stddev(rates);
-
-//         universal_barrier_group->barrier_wait();
-//         return s;
-//     }
-// }
 
 void blocksize_v_bandwidth(uint16_t gsize) {
     const size_t min_block_size = 16ull << 10;
@@ -619,6 +586,44 @@ void concurrent_bandwidth_group_size() {
     }
     puts("");
     fflush(stdout);
+}
+void active_senders() {
+    auto compute_block_size = [](size_t message_size) -> size_t {
+        if(message_size < 4096 * 2) return message_size;
+        if(message_size < 4096 * 10) return 4096;
+        if(message_size < 10 * (1 << 20)) return message_size / 10;
+        return 1 << 20;
+    };
+
+    auto compute_iterations = [](size_t message_size) -> size_t {
+        if(message_size == 1) return 20000;
+        if(message_size == 10000) return 10000;
+        if(message_size == 1'000'000) return 1000;
+        if(message_size == 100'000'000) return 100;
+        return max<size_t>(100000000 / message_size, 4u);
+    };
+
+    printf(
+        "Message Size, Group Size, 1-sender Bandwidth, half-sending Bandwidth, "
+        "all-sending Bandwidth, \n");
+
+    for(size_t message_size : {1, 10000, 1'000'000, 100'000'000}) {
+        for(uint32_t group_size = 3; group_size <= num_nodes; group_size++) {
+            printf("%d, %d, ", (int)message_size, (int)group_size);
+            fflush(stdout);
+
+            for(uint32_t num_senders : {1u, (group_size + 1) / 2, group_size}) {
+                auto s = measure_partially_concurrent_multicast(
+                    message_size, compute_block_size(message_size), group_size,
+                    num_senders, compute_iterations(message_size),
+                    rdmc::BINOMIAL_SEND);
+                printf("%f, ", s.bandwidth.mean / 8);
+                fflush(stdout);
+            }
+            printf("\n");
+            fflush(stdout);
+        }
+    }
 }
 void latency_group_size() {
     puts("=========================================================");
@@ -870,6 +875,8 @@ int main(int argc, char *argv[]) {
         // small_send_latency_group_size();
     } else if(strcmp(argv[1], "concurrent") == 0) {
         concurrent_bandwidth_group_size();
+    } else if(strcmp(argv[1], "active_senders") == 0) {
+        active_senders();
     } else {
         puts("Unrecognized experiment name.");
         fflush(stdout);
