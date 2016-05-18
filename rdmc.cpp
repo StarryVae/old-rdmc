@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>

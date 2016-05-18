@@ -4,9 +4,11 @@
 
 #include <cassert>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <sstream>
 #include <sys/stat.h>
 #include <thread>

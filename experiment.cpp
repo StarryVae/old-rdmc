@@ -6,6 +6,7 @@
 #include "util.h"
 #include "verbs_helper.h"
 
+#include <cmath>
 #include <algorithm>
 #include <atomic>
 #include <cassert>

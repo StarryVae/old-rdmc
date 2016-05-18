@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <climits>
+#include <cmath>
 #include <iostream>
 #include <sys/mman.h>
 
