@@ -68,7 +68,7 @@ bool socket::read(char *buffer, size_t size) {
         if(new_bytes >= 0)
             total_bytes += new_bytes;
         else {
-            cout << "Read error! Errno = " << errno << endl;
+            cout << "Read error! " << strerror(errno) << endl;
             return false;
         }
     }
@@ -109,7 +109,7 @@ connection_listener::connection_listener(int port) {
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(port);
     if(bind(listenfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-        fprintf(stderr, "ERROR on binding\n");
+        fprintf(stderr, "ERROR on binding to socket in ConnectionListener: %s\n", strerror(errno));
     listen(listenfd, 5);
 
     fd = unique_ptr<int, std::function<void(int *)>>(
