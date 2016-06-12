@@ -14,13 +14,26 @@
 struct ibv_mr;
 struct ibv_qp;
 
+/**
+ * Contains functions and classes for low-level RDMA operations, such as setting
+ * up memory regions and queue pairs. This provides a more C++-friendly interface
+ * to the IB Verbs library.
+ */
 namespace rdma {
+//Various classes of exceptions
 class exception {};
 class invalid_args : public exception {};
 class connection_broken : public exception {};
 class creation_failure : public exception {};
 class mr_creation_failure : public creation_failure {};
 class qp_creation_failure : public creation_failure {};
+
+/**
+ * A C++ wrapper for the IB Verbs ibv_mr struct. Registers a memory region for
+ * the provided buffer on construction, and deregisters it on destruction.
+ * Instances of this class can only be created after global Verbs initialization
+ * has been run, since it depends on the global Verbs resources.
+ */
 class memory_region {
     std::unique_ptr<ibv_mr, std::function<void(ibv_mr*)>> mr;
     friend class queue_pair;
@@ -32,6 +45,7 @@ public:
     char* const buffer;
     const size_t size;
 };
+
 class remote_memory_region {
 public:
     remote_memory_region(uint64_t remote_address, size_t length,
@@ -43,6 +57,11 @@ public:
     const uint32_t rkey;
 };
 
+/**
+ * A C++ wrapper for the IB Verbs ibv_qp struct and its associated functions.
+ * Instances of this class can only be created after global Verbs initialization
+ * has been run, since it depends on global Verbs resources.
+ */
 class queue_pair {
     std::unique_ptr<ibv_qp, std::function<void(ibv_qp*)>> qp;
 
