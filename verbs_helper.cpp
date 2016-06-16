@@ -7,9 +7,11 @@
 #include <byteswap.h>
 #include <cstring>
 #include <endian.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <iostream>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -52,6 +54,7 @@ struct ibv_resources {
     ibv_context *ib_ctx;          // device handle
     ibv_pd *pd;                   // PD handle
     ibv_cq *cq;                   // CQ handle
+    ibv_comp_channel *cc;         // Completion channel
 } verbs_resources;
 
 static int modify_qp_to_init(struct ibv_qp *qp, int ib_port) {
@@ -128,6 +131,9 @@ void verbs_destroy() {
     if(verbs_resources.cq && ibv_destroy_cq(verbs_resources.cq)) {
         fprintf(stderr, "failed to destroy CQ\n");
     }
+    if(verbs_resources.cc && ibv_destroy_comp_channel(verbs_resources.cc)) {
+        fprintf(stderr, "failed to destroy Completion Channel\n");
+    }
     if(verbs_resources.pd && ibv_dealloc_pd(verbs_resources.pd)) {
         fprintf(stderr, "failed to deallocate PD\n");
     }
@@ -171,23 +177,21 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     int i;
     int cq_size = 0;
     int num_devices = 0;
-    int rc = 0;
 
     fprintf(stdout, "searching for IB devices in host\n");
     /* get device names in the system */
     dev_list = ibv_get_device_list(&num_devices);
     if(!dev_list) {
         fprintf(stderr, "failed to get IB devices list\n");
-        rc = 1;
         goto resources_create_exit;
     }
     /* if there isn't any IB device in host */
     if(!num_devices) {
         fprintf(stderr, "found %d device(s)\n", num_devices);
-        rc = 1;
         goto resources_create_exit;
     }
 
+    local_config.dev_name = getenv("RDMC_DEVICE_NAME");
     fprintf(stdout, "found %d device(s)\n", num_devices);
     /* search for the specific device we want to work with */
     for(i = 0; i < num_devices; i++) {
@@ -204,14 +208,12 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     /* if the device wasn't found in host */
     if(!ib_dev) {
         fprintf(stderr, "IB device %s wasn't found\n", local_config.dev_name);
-        rc = 1;
         goto resources_create_exit;
     }
     /* get device handle */
     res->ib_ctx = ibv_open_device(ib_dev);
     if(!res->ib_ctx) {
         fprintf(stderr, "failed to open device %s\n", local_config.dev_name);
-        rc = 1;
         goto resources_create_exit;
     }
     /* We are now done with device list, free it */
@@ -222,22 +224,31 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     if(ibv_query_port(res->ib_ctx, local_config.ib_port, &res->port_attr)) {
         fprintf(stderr, "ibv_query_port on port %u failed\n",
                 local_config.ib_port);
-        rc = 1;
         goto resources_create_exit;
     }
     /* allocate Protection Domain */
     res->pd = ibv_alloc_pd(res->ib_ctx);
     if(!res->pd) {
         fprintf(stderr, "ibv_alloc_pd failed\n");
-        rc = 1;
+        goto resources_create_exit;
+    }
+
+    res->cc = ibv_create_comp_channel(res->ib_ctx);
+    if(!res->cc) {
+        fprintf(stderr, "ibv_create_comp_channel failed\n");
+        goto resources_create_exit;
+    }
+
+    if(fcntl(res->cc->fd, F_SETFL, fcntl(res->cc->fd, F_GETFL) | O_NONBLOCK)) {
+        fprintf(stderr,
+                "failed to change file descriptor for completion channel\n");
         goto resources_create_exit;
     }
 
     cq_size = 1024;
-    res->cq = ibv_create_cq(res->ib_ctx, cq_size, NULL, NULL, 0);
+    res->cq = ibv_create_cq(res->ib_ctx, cq_size, NULL, res->cc, 0);
     if(!res->cq) {
         fprintf(stderr, "failed to create CQ with %u entries\n", cq_size);
-        rc = 1;
         goto resources_create_exit;
     }
 
@@ -245,23 +256,25 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     return true;
 resources_create_exit:
     TRACE("verbs_initialize() - ERROR!!!!!!!!!!!!!!");
-    if(rc) {
-        if(res->cq) {
-            ibv_destroy_cq(res->cq);
-            res->cq = NULL;
-        }
-        if(res->pd) {
-            ibv_dealloc_pd(res->pd);
-            res->pd = NULL;
-        }
-        if(res->ib_ctx) {
-            ibv_close_device(res->ib_ctx);
-            res->ib_ctx = NULL;
-        }
-        if(dev_list) {
-            ibv_free_device_list(dev_list);
-            dev_list = NULL;
-        }
+    if(res->cq) {
+        ibv_destroy_cq(res->cq);
+        res->cq = NULL;
+    }
+    if(res->cq) {
+        ibv_destroy_comp_channel(res->cc);
+        res->cc = NULL;
+    }
+    if(res->pd) {
+        ibv_dealloc_pd(res->pd);
+        res->pd = NULL;
+    }
+    if(res->ib_ctx) {
+        ibv_close_device(res->ib_ctx);
+        res->ib_ctx = NULL;
+    }
+    if(dev_list) {
+        ibv_free_device_list(dev_list);
+        dev_list = NULL;
     }
     return false;
 }
@@ -660,5 +673,6 @@ map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     return remote_mrs;
 }
 ibv_cq *verbs_get_cq() { return verbs_resources.cq; }
+ibv_comp_channel *verbs_get_completion_channel() { return verbs_resources.cc; }
 }
 }

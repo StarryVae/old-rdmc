@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <poll.h>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -42,6 +43,7 @@ using namespace rdma;
 namespace rdma {
 namespace impl {
 extern ibv_cq* verbs_get_cq();
+extern ibv_comp_channel* verbs_get_completion_channel();
 }
 }
 
@@ -59,12 +61,47 @@ static void main_loop() {
     const int max_work_completions = 1024;
     unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
 
+    ibv_cq* completion_queue = ::rdma::impl::verbs_get_cq();
+    ibv_comp_channel* completion_channel =
+        ::rdma::impl::verbs_get_completion_channel();
+
     while(true) {
         int num_completions = 0;
         while(!shutdown_flag && num_completions == 0) {
-            num_completions =
-                ibv_poll_cq(::rdma::impl::verbs_get_cq(), max_work_completions,
-                            work_completions.get());
+            uint64_t poll_end = get_time() + 50000000;
+            while(!shutdown_flag && num_completions == 0 &&
+                  get_time() < poll_end) {
+                num_completions =
+                    ibv_poll_cq(completion_queue, max_work_completions,
+                                work_completions.get());
+            }
+
+            if(num_completions == 0) {
+                if(ibv_req_notify_cq(completion_queue, 0))
+                    throw rdma::exception();
+
+                num_completions =
+                    ibv_poll_cq(completion_queue, max_work_completions,
+                                work_completions.get());
+
+                if(num_completions == 0) {
+                    pollfd file_descriptor;
+                    file_descriptor.fd = completion_channel->fd;
+                    file_descriptor.events = POLLIN;
+                    file_descriptor.revents = 0;
+                    int rc = 0;
+                    while(rc == 0 && !shutdown_flag) {
+                        rc = poll(&file_descriptor, 1, 50);
+                    }
+
+                    if(rc > 0) {
+                        ibv_cq* ev_cq;
+                        void* ev_ctx;
+                        ibv_get_cq_event(completion_channel, &ev_cq, &ev_ctx);
+                        ibv_ack_cq_events(ev_cq, 1);
+                    }
+                }
+            }
         }
 
         if(shutdown_flag) {
