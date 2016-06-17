@@ -16,11 +16,12 @@ struct ibv_qp;
 
 /**
  * Contains functions and classes for low-level RDMA operations, such as setting
- * up memory regions and queue pairs. This provides a more C++-friendly interface
+ * up memory regions and queue pairs. This provides a more C++-friendly
+ * interface
  * to the IB Verbs library.
  */
 namespace rdma {
-//Various classes of exceptions
+// Various classes of exceptions
 class exception {};
 class invalid_args : public exception {};
 class connection_broken : public exception {};
