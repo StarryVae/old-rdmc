@@ -96,7 +96,7 @@ public:
     // from a constructor, but we need to perform them in order to know which
     // queue pair to post the first_block_buffer on, and which nodes we must
     // connect to.
-    void init();
+    bool init();
 
 private:
     void post_recv(block_transfer transfer);

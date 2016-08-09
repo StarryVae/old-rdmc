@@ -6,12 +6,12 @@
 #include "util.h"
 #include "verbs_helper.h"
 
-#include <cmath>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -91,7 +91,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
             members.push_back(i);
         }
         LOG_EVENT(-1, -1, -1, "create_group");
-        rdmc::create_group(
+        CHECK(rdmc::create_group(
             next_group_number, members, block_size, type,
             [&](size_t length) -> rdmc::receive_destination {
                 return {mr, 0};
@@ -105,7 +105,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
             },
             [group_number = next_group_number](optional<uint32_t>) {
                 LOG_EVENT(group_number, -1, -1, "send_failed");
-            });
+            }));
         LOG_EVENT(-1, -1, -1, "group_created");
         send_groups.emplace(send_params, next_group_number++);
     }
@@ -178,7 +178,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
             LOG_EVENT(-1, -1, -1, "start_send_timer");
             uint64_t start_time = get_time();
             send_completion_time = 0;
-            rdmc::send(group_number, mr, 0, size);
+            CHECK(rdmc::send(group_number, mr, 0, size));
 
             unique_lock<mutex> lk(send_mutex);
             while(send_completion_time == 0) /* do nothing*/
@@ -242,7 +242,7 @@ send_stats measure_partially_concurrent_multicast(
             members.push_back((j + i) % group_size);
         }
         LOG_EVENT(-1, -1, -1, "create_group");
-        rdmc::create_group(
+        CHECK(rdmc::create_group(
             base_group_number + i, members, block_size, type,
             [&mr, i, buffer_size](size_t length) -> rdmc::receive_destination {
                 return {mr, buffer_size * i};
@@ -256,7 +256,7 @@ send_stats measure_partially_concurrent_multicast(
             },
             [group_number = base_group_number + i](optional<uint32_t>) {
                 LOG_EVENT(group_number, -1, -1, "send_failed");
-            });
+            }));
         LOG_EVENT(-1, -1, -1, "group_created");
     }
 
@@ -278,8 +278,8 @@ send_stats measure_partially_concurrent_multicast(
         uint64_t start_time = get_time();
 
         if(node_rank < num_senders) {
-            rdmc::send(base_group_number + node_rank, mr,
-                       buffer_size * node_rank, size);
+            CHECK(rdmc::send(base_group_number + node_rank, mr,
+                             buffer_size * node_rank, size));
         }
 
         while(send_completion_time == 0) /* do nothing*/
@@ -336,7 +336,7 @@ send_stats measure_concurrent_multicast(
             members.push_back((j + i) % group_size);
         }
         LOG_EVENT(-1, -1, -1, "create_group");
-        rdmc::create_group(
+        CHECK(rdmc::create_group(
             base_group_number + i, members, block_size, type,
             [&mr, i, size](size_t length) -> rdmc::receive_destination {
                 return {mr, size * i};
@@ -353,7 +353,7 @@ send_stats measure_concurrent_multicast(
             },
             [group_number = base_group_number + i](optional<uint32_t>) {
                 LOG_EVENT(group_number, -1, -1, "send_failed");
-            });
+            }));
         LOG_EVENT(-1, -1, -1, "group_created");
     }
 
@@ -373,7 +373,8 @@ send_stats measure_concurrent_multicast(
         LOG_EVENT(-1, -1, -1, "start_send_timer");
         uint64_t start_time = get_time();
 
-        rdmc::send(base_group_number + node_rank, mr, size * node_rank, size);
+        CHECK(rdmc::send(base_group_number + node_rank, mr, size * node_rank,
+                         size));
 
         while(send_completion_time == 0) /* do nothing*/
             ;
@@ -710,6 +711,42 @@ void concurrent_send() {
 //     fflush(stdout);
 // }
 
+void tast_create_group_failure() {
+    if(num_nodes <= 2) {
+        puts("FAILURE: must run with at least 3 nodes");
+    }
+    if(node_rank == 0) {
+        puts("Node 0 exiting...");
+        exit(0);
+    }
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    vector<uint32_t> members;
+    for(uint32_t i = 0; i < num_nodes; i++) {
+        members.push_back(i);
+    }
+
+    puts("Starting test...");
+    uint64_t t = get_time();
+    bool ret = rdmc::create_group(
+        0, members, 1 << 20, rdmc::BINOMIAL_SEND,
+        [&](size_t length) -> rdmc::receive_destination {
+            puts("FAILURE: incoming message called");
+            return {nullptr, 0};
+        },
+        [&](char *data, size_t) { puts("FAILURE: received message called"); },
+        [group_number = next_group_number](optional<uint32_t>){});
+
+    t = get_time() - t;
+    if(ret) {
+        puts("FAILURE: Managed to create group containing failed node");
+    } else {
+        printf("time taken: %f ms\n", t * 1e-6);
+        puts("PASS");
+    }
+}
+
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
 #define ANSI_COLOR_YELLOW "\x1b[33m"
@@ -878,6 +915,9 @@ int main(int argc, char *argv[]) {
         concurrent_bandwidth_group_size();
     } else if(strcmp(argv[1], "active_senders") == 0) {
         active_senders();
+    } else if(strcmp(argv[1], "tast_create_group_failure") == 0) {
+        tast_create_group_failure();
+        exit(0);
     } else {
         puts("Unrecognized experiment name.");
         fflush(stdout);

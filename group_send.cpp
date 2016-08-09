@@ -231,10 +231,14 @@ void group::send_message(shared_ptr<memory_region> message_mr, size_t offset,
     // No need to worry about completion here. We must send at least
     // one block, so we can't be done already.
 }
-void group::init() {
+bool group::init() {
     unique_lock<mutex> lock(monitor);
 
-    form_connections();
+    try {
+        form_connections();
+    } catch(rdma::qp_creation_failure) {
+        return false;
+    }
 
     if(member_index > 0) {
         auto transfer = get_first_block();
@@ -244,6 +248,7 @@ void group::init() {
         send_ready_for_block(transfer->target);
         // puts("Issued Ready For Block CCCCCCCCC");
     }
+    return true;
 }
 void group::send_next_block() {
     sending = false;

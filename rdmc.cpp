@@ -244,9 +244,7 @@ bool create_group(uint16_t group_number, std::vector<uint32_t> members,
 
     unique_lock<mutex> lock(groups_lock);
     auto p = groups.emplace(group_number, std::move(g));
-    if(!p.second) return false;
-    p.first->second->init();
-    return true;
+    return p.second && p.first->second->init();
 }
 
 void destroy_group(uint16_t group_number) {

@@ -68,4 +68,11 @@ void start_flush_server();
                   block_number, event_name);                              \
     } while(0)
 
+inline void CHECK(bool b) {
+    if(!b) {
+        puts("CHECK failed, aborting.");
+        abort();
+    }
+}
+
 #endif /* UTIL_H */
