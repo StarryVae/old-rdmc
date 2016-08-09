@@ -146,14 +146,6 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
                       uint32_t node_rank) {
     memset(&verbs_resources, 0, sizeof(verbs_resources));
 
-    auto local_it = node_addresses.find(node_rank);
-    if(local_it == node_addresses.end()) {
-        fprintf(stderr,
-                "ERROR: address list for verbs_initialize doesn't"
-                "contain current node");
-        return false;
-    }
-
     connection_listener = make_unique<tcp::connection_listener>(TCP_PORT);
 
     TRACE("Starting connection phase");
