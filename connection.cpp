@@ -3,13 +3,13 @@
 
 #include <arpa/inet.h>
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <cerrno>
 
 namespace tcp {
 
@@ -65,10 +65,9 @@ bool socket::read(char *buffer, size_t size) {
     while(total_bytes < size) {
         ssize_t new_bytes =
             ::read(sock, buffer + total_bytes, size - total_bytes);
-        if(new_bytes >= 0)
+        if(new_bytes > 0) {
             total_bytes += new_bytes;
-        else {
-            cout << "Read error! " << strerror(errno) << endl;
+        } else if(new_bytes == 0 || (new_bytes == -1 && errno != EINTR)) {
             return false;
         }
     }
@@ -87,7 +86,7 @@ bool socket::write(const char *buffer, size_t size) {
             ::write(sock, buffer + total_bytes, size - total_bytes);
         if(bytes_written >= 0) {
             total_bytes += bytes_written;
-        } else {
+        } else if(bytes_written == -1 && errno != EINTR) {
             return false;
         }
     }
