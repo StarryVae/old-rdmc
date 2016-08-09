@@ -40,7 +40,7 @@ typedef std::function<void(boost::optional<uint32_t> suspected_victim)>
     failure_callback_t;
 
 bool initialize(const std::map<uint32_t, std::string>& addresses,
-                uint32_t node_rank);
+                uint32_t node_rank) __attribute__((warn_unused_result));
 void add_address(uint32_t index, const std::string& address);
 void shutdown();
 
@@ -48,11 +48,12 @@ bool create_group(uint16_t group_number, std::vector<uint32_t> members,
                   size_t block_size, send_algorithm algorithm,
                   incoming_message_callback_t incoming_receive,
                   completion_callback_t send_callback,
-                  failure_callback_t failure_callback);
+                  failure_callback_t failure_callback)
+    __attribute__((warn_unused_result));
 void destroy_group(uint16_t group_number);
 
 bool send(uint16_t group_number, std::shared_ptr<rdma::memory_region> mr,
-          size_t offset, size_t length);
+          size_t offset, size_t length) __attribute__((warn_unused_result));
 
 class barrier_group {
     // Queue Pairs and associated remote memory regions used for performing a
