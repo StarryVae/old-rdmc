@@ -36,6 +36,7 @@ public:
     bool is_empty();
 
     bool read(char* buffer, size_t size);
+    bool probe();
     bool write(char const* buffer, size_t size);
 
     template <class T>

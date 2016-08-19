@@ -9,6 +9,7 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace tcp {
@@ -72,6 +73,12 @@ bool socket::read(char *buffer, size_t size) {
         }
     }
     return true;
+}
+
+bool socket::probe() {
+    int count;
+    ioctl(sock, FIONREAD, &count);
+    return count > 0;
 }
 
 bool socket::write(const char *buffer, size_t size) {

@@ -7,3 +7,4 @@ CMakeFiles/*
 scripts/*
 /librdmc.a
 /script_copy.sh
+/TAGS
