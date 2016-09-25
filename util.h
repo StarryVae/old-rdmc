@@ -10,6 +10,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
+#define NOMINMAX
+#include <WinSock2.h>
+#include <Windows.h>
+#endif
+
 template <class T, class U>
 size_t index_of(T container, U elem) {
     size_t n = 0;
@@ -21,11 +27,17 @@ size_t index_of(T container, U elem) {
     return container.size();
 }
 bool file_exists(const std::string &name);
-void create_directory(const std::string &name);
 inline uint64_t get_time() {
+#ifndef _MSC_VER
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
     return now.tv_sec * 1000000000L + now.tv_nsec;
+#else
+    LARGE_INTEGER now;
+    now.QuadPart = 0;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+#endif
 }
 double compute_data_rate(size_t numBytes, uint64_t sTime, uint64_t eTime);
 void put_flush(const char *str);

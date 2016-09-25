@@ -22,16 +22,19 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <poll.h>
 #include <queue>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
+
+#ifndef _MSC_VER
+#include <poll.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
-#include <thread>
 #include <unistd.h>
-#include <vector>
+#endif
 
 extern "C" {
 #include <infiniband/verbs.h>
@@ -85,6 +88,7 @@ static void main_loop() {
                                 work_completions.get());
 
                 if(num_completions == 0) {
+#ifndef _MSC_VER  // non-blocking mode only supported on Linux
                     pollfd file_descriptor;
                     file_descriptor.fd = completion_channel->fd;
                     file_descriptor.events = POLLIN;
@@ -94,7 +98,9 @@ static void main_loop() {
                         rc = poll(&file_descriptor, 1, 50);
                     }
 
-                    if(rc > 0) {
+                    if(rc > 0)
+#endif
+                    {
                         ibv_cq* ev_cq;
                         void* ev_ctx;
                         ibv_get_cq_event(completion_channel, &ev_cq, &ev_ctx);
@@ -278,7 +284,7 @@ barrier_group::barrier_group(vector<uint32_t> members) {
     if(group_size <= 1 || member_index >= members.size())
         throw rdmc::invalid_args();
 
-    total_steps = ceil(log2(group_size));
+    total_steps = static_cast<unsigned int>(ceil(log2(group_size)));
     for(unsigned int m = 0; m < total_steps; m++) steps[m] = -1;
 
     steps_mr = make_unique<memory_region>((char*)&steps[0],

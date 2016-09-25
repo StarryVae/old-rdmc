@@ -19,8 +19,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <sys/mman.h>
-#include <sys/resource.h>
 #include <thread>
 #include <vector>
 
@@ -28,15 +26,15 @@ using namespace std;
 using namespace rdma;
 
 template <class T>
-struct stat {
+struct statistic {
     T mean;
     T stddev;
 };
 
 struct send_stats {
-    stat<double> time;  // in ms
+    statistic<double> time;  // in ms
 
-    stat<double> bandwidth;  // in Gb/s
+    statistic<double> bandwidth;  // in Gb/s
 
     size_t size;
     size_t block_size;
@@ -74,7 +72,7 @@ send_stats measure_multicast(size_t size, size_t block_size,
         return send_stats();
     }
 
-    std::tuple<uint16_t, size_t, rdmc::send_algorithm> send_params(
+    std::tuple<uint32_t, size_t, rdmc::send_algorithm> send_params(
         group_size, block_size, type);
 
     size_t num_blocks = (size - 1) / block_size + 1;
@@ -452,7 +450,7 @@ void blocksize_v_bandwidth(uint16_t gsize) {
                 printf(", ");
                 continue;
             }
-            auto s = measure_multicast(size, block_size, gsize, 8);
+            auto s = measure_multicast((size_t)size, block_size, gsize, 8);
             printf("%f, ", s.bandwidth.mean);
             fflush(stdout);
 
@@ -759,20 +757,23 @@ void test_pattern() {
     auto t = get_time();
     for(size_t group_size = 2; group_size <= 64; group_size++) {
         for(size_t message_size = 1; message_size <= 32; message_size++) {
-            size_t total_steps = message_size + ceil(log2(group_size)) - 1;
+            size_t total_steps =
+                message_size + (size_t)ceil(log2(group_size)) - 1;
             for(unsigned int step = 0; step < total_steps; step++) {
                 for(unsigned int node = 0; node < group_size; node++) {
                     // Compute the outgoing transfer for this node/step
                     auto transfer = binomial_group::get_outgoing_transfer(
-                        node, step, group_size, floor(log2(group_size)),
-                        message_size, total_steps);
+                        node, step, group_size,
+                        (unsigned int)floor(log2(group_size)), message_size,
+                        total_steps);
                     n++;
 
                     if(transfer) {
                         // See what the supposed sender is doing this step
                         auto reverse = binomial_group::get_incoming_transfer(
                             transfer->target, step, group_size,
-                            floor(log2(group_size)), message_size, total_steps);
+                            (unsigned int)floor(log2(group_size)), message_size,
+                            total_steps);
                         n++;
 
                         // Make sure the two nodes agree
@@ -787,8 +788,8 @@ void test_pattern() {
                                 auto prev =
                                     binomial_group::get_incoming_transfer(
                                         node, s, group_size,
-                                        floor(log2(group_size)), message_size,
-                                        total_steps);
+                                        (unsigned int)floor(log2(group_size)),
+                                        message_size, total_steps);
                                 n++;
                                 if(prev &&
                                    prev->block_number == transfer->block_number)
@@ -803,15 +804,17 @@ void test_pattern() {
 
                     // Compute the incoming transfer for this node/step
                     transfer = binomial_group::get_incoming_transfer(
-                        node, step, group_size, floor(log2(group_size)),
-                        message_size, total_steps);
+                        node, step, group_size,
+                        (unsigned int)floor(log2(group_size)), message_size,
+                        total_steps);
                     n++;
 
                     if(transfer) {
                         // Again make sure the supposed receiver agrees
                         auto reverse = binomial_group::get_outgoing_transfer(
                             transfer->target, step, group_size,
-                            floor(log2(group_size)), message_size, total_steps);
+                            (unsigned int)floor(log2(group_size)), message_size,
+                            total_steps);
                         n++;
                         if(!reverse) throw false;
                         if(transfer->block_number != reverse->block_number)
@@ -822,7 +825,8 @@ void test_pattern() {
                         // getting.
                         for(int s = step - 1; s >= 0; s--) {
                             auto prev = binomial_group::get_incoming_transfer(
-                                node, s, group_size, floor(log2(group_size)),
+                                node, s, group_size,
+                                (unsigned int)floor(log2(group_size)),
                                 message_size, total_steps);
                             n++;
                             if(prev &&
@@ -839,8 +843,9 @@ void test_pattern() {
                 set<size_t> blocks;
                 for(unsigned int step = 0; step < total_steps; step++) {
                     auto transfer = binomial_group::get_incoming_transfer(
-                        node, step, group_size, floor(log2(group_size)),
-                        message_size, total_steps);
+                        node, step, group_size,
+                        (unsigned int)floor(log2(group_size)), message_size,
+                        total_steps);
                     n++;
 
                     if(transfer) blocks.insert(transfer->block_number);

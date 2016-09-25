@@ -2,7 +2,10 @@
 #ifndef MESSAGE_H
 #define MESSAGE_H
 
+#include <cassert>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <utility>
 
 enum class MessageType : uint8_t {
@@ -38,7 +41,9 @@ inline ParsedImmediate parse_immediate(uint32_t imm) {
     return ParsedImmediate{(uint16_t)((imm & 0xffff0000) >> 16),
                            (uint16_t)(imm & 0x0000ffff)};
 }
-inline uint32_t form_immediate(uint16_t total_blocks, uint16_t block_number) {
+inline uint32_t form_immediate(size_t total_blocks, size_t block_number) {
+    assert(total_blocks <= std::numeric_limits<uint16_t>::max());
+    assert(block_number <= std::numeric_limits<uint16_t>::max());
     return ((uint32_t)total_blocks) << 16 | ((uint32_t)block_number);
 }
 

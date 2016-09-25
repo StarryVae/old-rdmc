@@ -5,7 +5,6 @@
 #include <climits>
 #include <cmath>
 #include <iostream>
-#include <sys/mman.h>
 
 using namespace std;
 using namespace rdma;
@@ -499,7 +498,8 @@ void tree_group::form_connections() {
     }
 }
 size_t tree_group::get_total_steps() const {
-    unsigned int log2_num_members = ceil(log2(num_members));
+    unsigned int log2_num_members =
+        static_cast<unsigned int>(ceil(log2(num_members)));
     return num_blocks * log2_num_members;
 }
 optional<group::block_transfer> tree_group::get_outgoing_transfer(
@@ -532,13 +532,15 @@ optional<group::block_transfer> tree_group::get_first_block() const {
             return block_transfer{member_index - (1 << i), 0};
     }
     assert(false);
+    return boost::none;
 }
 binomial_group::binomial_group(uint16_t group_number, size_t block_size,
                                vector<uint32_t> members, uint32_t member_index,
                                incoming_message_callback_t upcall,
                                completion_callback_t callback)
     : group(group_number, block_size, members, member_index, upcall, callback),
-      log2_num_members(floor(log2(num_members))) /*,
+      log2_num_members(
+          static_cast<unsigned int>(floor(log2(num_members)))) /*,
       vertex(member_index & ((1 << log2_num_members) - 1))*/ {
     // size_t vertex_twin = vertex | (1 << log2_num_members);
     // if(vertex_twin < num_members) {

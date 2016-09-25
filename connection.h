@@ -3,6 +3,7 @@
 #define CONNECTION_H
 
 #include <cassert>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>

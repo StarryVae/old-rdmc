@@ -38,10 +38,6 @@ bool file_exists(const string &name) {
     return (stat(name.c_str(), &buffer) == 0);
 }
 
-void create_directory(const string &name) {
-    mkdir(name.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
-}
-
 // return bits / nanosecond = Gigabits/second
 double compute_data_rate(size_t num_bytes, uint64_t sTime, uint64_t eTime) {
     return ((double)num_bytes) * 8.0 / (eTime - sTime);

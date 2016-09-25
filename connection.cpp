@@ -1,21 +1,25 @@
 
 #include "connection.h"
 
-#include <arpa/inet.h>
 #include <cassert>
 #include <cerrno>
 #include <cstring>
 #include <iostream>
-#include <netdb.h>
-#include <sys/socket.h>
 #include <sys/types.h>
+
+#ifndef _MSC_VER
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 namespace tcp {
 
 using namespace std;
 
+#ifndef _MSC_VER
 socket::socket(string servername, int port) {
     sock = ::socket(AF_INET, SOCK_STREAM, 0);
     if(sock < 0) throw connection_failure();
@@ -145,4 +149,7 @@ socket connection_listener::accept() {
 
     return socket(sock, std::string(client_ip_cstr));
 }
+#else
+// TODO
+#endif
 }

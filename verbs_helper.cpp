@@ -3,19 +3,22 @@
 #include "connection.h"
 #include "util.h"
 
+#include <cstring>
+#include <fcntl.h>
+#include <iostream>
+#include <sys/types.h>
+#include <vector>
+
+#ifndef _MSC_VER
 #include <arpa/inet.h>
 #include <byteswap.h>
-#include <cstring>
 #include <endian.h>
-#include <fcntl.h>
 #include <getopt.h>
-#include <iostream>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
-#include <vector>
+#endif
 
 extern "C" {
 #include <infiniband/verbs.h>
@@ -27,9 +30,9 @@ namespace rdma {
 const uint32_t TCP_PORT = 19875;
 
 struct config_t {
-    const char *dev_name;  // IB device name
-    int ib_port = 1;       // local IB port to work with
-    int gid_idx = 0;       // gid index to use
+    string dev_name;  // IB device name
+    int ib_port = 1;  // local IB port to work with
+    int gid_idx = 0;  // gid index to use
 };
 
 // structure to exchange data which is needed to connect the QPs
@@ -37,7 +40,7 @@ struct cm_con_data_t {
     uint32_t qp_num;  // QP number
     uint16_t lid;     // LID of the IB port
     uint8_t gid[16];  // gid
-} __attribute__((packed));
+};
 
 // sockets for each connection
 static map<uint32_t, tcp::socket> sockets;
@@ -183,29 +186,38 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
         goto resources_create_exit;
     }
 
-    local_config.dev_name = getenv("RDMC_DEVICE_NAME");
+#ifndef _MSC_VER
+    {
+        const char *dev_name = getenv("RDMC_DEVICE_NAME");
+        local_config.dev_name = dev_name ? dev_name : "";
+    }
+#endif
+
     fprintf(stdout, "found %d device(s)\n", num_devices);
     /* search for the specific device we want to work with */
     for(i = 0; i < num_devices; i++) {
-        if(!local_config.dev_name) {
-            local_config.dev_name = strdup(ibv_get_device_name(dev_list[i]));
+        if(local_config.dev_name.empty()) {
+            local_config.dev_name = string(ibv_get_device_name(dev_list[i]));
             fprintf(stdout, "device not specified, using first one found: %s\n",
-                    local_config.dev_name);
+                    local_config.dev_name.c_str());
         }
-        if(!strcmp(ibv_get_device_name(dev_list[i]), local_config.dev_name)) {
+        if(!strcmp(ibv_get_device_name(dev_list[i]),
+                   local_config.dev_name.c_str())) {
             ib_dev = dev_list[i];
             break;
         }
     }
     /* if the device wasn't found in host */
     if(!ib_dev) {
-        fprintf(stderr, "IB device %s wasn't found\n", local_config.dev_name);
+        fprintf(stderr, "IB device %s wasn't found\n",
+                local_config.dev_name.c_str());
         goto resources_create_exit;
     }
     /* get device handle */
     res->ib_ctx = ibv_open_device(ib_dev);
     if(!res->ib_ctx) {
-        fprintf(stderr, "failed to open device %s\n", local_config.dev_name);
+        fprintf(stderr, "failed to open device %s\n",
+                local_config.dev_name.c_str());
         goto resources_create_exit;
     }
     /* We are now done with device list, free it */
@@ -231,11 +243,13 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
         goto resources_create_exit;
     }
 
+#ifndef _MSC_VER
     if(fcntl(res->cc->fd, F_SETFL, fcntl(res->cc->fd, F_GETFL) | O_NONBLOCK)) {
         fprintf(stderr,
                 "failed to change file descriptor for completion channel\n");
         goto resources_create_exit;
     }
+#endif
 
     cq_size = 1024;
     res->cq = ibv_create_cq(res->ib_ctx, cq_size, NULL, res->cc, 0);
