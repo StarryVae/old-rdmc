@@ -11,6 +11,7 @@
 namespace tcp {
 
 struct exception {};
+struct initialization_failure : public exception {};
 struct connection_failure : public exception {};
 
 class socket {

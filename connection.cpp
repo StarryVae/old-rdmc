@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <sys/types.h>
 
 #ifndef _MSC_VER
@@ -13,14 +14,31 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#else
+#pragma comment(lib, "Ws2_32.lib")
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#include <WinSock2.h>
+#include <Ws2tcpip.h>
 #endif
 
 namespace tcp {
 
 using namespace std;
 
-#ifndef _MSC_VER
+#ifdef _MSC_VER
+static WSADATA wsaData;
+static std::once_flag initialize_winsock2_flag;
+void initialize_winsock2() {
+    if(WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        throw initialization_failure();
+}
+#endif
+
 socket::socket(string servername, int port) {
+#ifdef _MSC_VER
+    std::call_once(initialize_winsock2_flag, initialize_winsock2);
+#endif
+
     sock = ::socket(AF_INET, SOCK_STREAM, 0);
     if(sock < 0) throw connection_failure();
 
@@ -28,7 +46,8 @@ socket::socket(string servername, int port) {
     server = gethostbyname(servername.c_str());
     if(server == nullptr) throw connection_failure();
 
-    char server_ip_cstr[server->h_length];
+    char server_ip_cstr[16];
+    assert(server->h_length == 16);
     inet_ntop(AF_INET, server->h_addr, server_ip_cstr, server->h_length);
     remote_ip = string(server_ip_cstr);
 
@@ -36,8 +55,8 @@ socket::socket(string servername, int port) {
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
-    bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
-          server->h_length);
+    memcpy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
+           server->h_length);
 
     while(connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         /* do nothing*/;
@@ -55,7 +74,11 @@ socket &socket::operator=(socket &&s) {
 }
 
 socket::~socket() {
+#ifndef _MSC_VER
     if(sock >= 0) close(sock);
+#else
+    closesocket(sock);
+#endif
 }
 
 bool socket::is_empty() { return sock == -1; }
@@ -66,6 +89,7 @@ bool socket::read(char *buffer, size_t size) {
         return false;
     }
 
+#ifndef _MSC_VER
     size_t total_bytes = 0;
     while(total_bytes < size) {
         ssize_t new_bytes =
@@ -77,11 +101,20 @@ bool socket::read(char *buffer, size_t size) {
         }
     }
     return true;
+#else
+    int new_bytes = recv(sock, buffer, size, MSG_WAITALL);
+    return new_bytes > 0;
+#endif
 }
 
 bool socket::probe() {
+#ifndef _MSC_VER
     int count;
     ioctl(sock, FIONREAD, &count);
+#else
+    unsigned long count;
+    ioctlsocket(sock, FIONREAD, &count);
+#endif
     return count > 0;
 }
 
@@ -93,6 +126,7 @@ bool socket::write(const char *buffer, size_t size) {
 
     size_t total_bytes = 0;
     while(total_bytes < size) {
+#ifndef _MSC_VER
         ssize_t bytes_written =
             ::write(sock, buffer + total_bytes, size - total_bytes);
         if(bytes_written >= 0) {
@@ -100,11 +134,24 @@ bool socket::write(const char *buffer, size_t size) {
         } else if(bytes_written == -1 && errno != EINTR) {
             return false;
         }
+#else
+        int bytes_written =
+            send(sock, buffer + total_bytes, size - total_bytes, 0);
+        if(bytes_written >= 0) {
+            total_bytes += bytes_written;
+        } else if(bytes_written == SOCKET_ERROR) {
+            return false;
+        }
+#endif
     }
     return true;
 }
 
 connection_listener::connection_listener(int port) {
+#ifdef _MSC_VER
+    std::call_once(initialize_winsock2_flag, initialize_winsock2);
+#endif
+
     sockaddr_in serv_addr;
 
     int listenfd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -118,14 +165,19 @@ connection_listener::connection_listener(int port) {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(port);
-    if(bind(listenfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-        fprintf(stderr,
-                "ERROR on binding to socket in ConnectionListener: %s\n",
-                strerror(errno));
+
+    if(::bind(listenfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        fprintf(stderr, "ERROR on binding to socket in ConnectionListener");
+
     listen(listenfd, 5);
 
+#ifndef _MSC_VER
     fd = unique_ptr<int, std::function<void(int *)>>(
         new int(listenfd), [](int *fd) { close(*fd); });
+#else
+    fd = unique_ptr<int, std::function<void(int *)>>(
+        new int(listenfd), [](int *fd) { closesocket(*fd); });
+#endif
 }
 
 socket connection_listener::accept() {
@@ -149,7 +201,4 @@ socket connection_listener::accept() {
 
     return socket(sock, std::string(client_ip_cstr));
 }
-#else
-// TODO
-#endif
 }
