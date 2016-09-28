@@ -5,7 +5,6 @@
 #include "verbs_helper.h"
 
 #include <array>
-#include <boost/optional.hpp>
 #include <functional>
 #include <map>
 #include <memory>
@@ -14,8 +13,11 @@
 #include <utility>
 #include <vector>
 
-#ifdef _MSC_VER
+#ifndef _MSC_VER
+#include <experimental/optional>
+#else
 #pragma warning(disable : 5030)
+#include "third_party/optional/optional.hpp"
 #endif
 
 namespace rdmc {
@@ -41,7 +43,7 @@ struct receive_destination {
 typedef std::function<receive_destination(size_t size)>
     incoming_message_callback_t;
 typedef std::function<void(char* buffer, size_t size)> completion_callback_t;
-typedef std::function<void(boost::optional<uint32_t> suspected_victim)>
+typedef std::function<void(std::experimental::optional<uint32_t> suspected_victim)>
     failure_callback_t;
 
 bool initialize[[gnu::warn_unused_result]](

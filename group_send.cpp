@@ -338,7 +338,7 @@ void group::complete_message() {
     //     memset(first_block_buffer, 1, block_size);
     //     memset(first_block_buffer, 0, block_size);
     // }
-    first_block_number = boost::none;
+    first_block_number = std::experimental::nullopt;
 
     if(member_index != 0) {
         num_received_blocks = 0;
@@ -426,7 +426,7 @@ optional<group::block_transfer> chain_group::get_outgoing_transfer(
 
     if(member_index > step || block_number >= num_blocks ||
        member_index == num_members - 1) {
-        return boost::none;
+        return std::experimental::nullopt;
     }
 
     return block_transfer{(uint32_t)(member_index + 1), block_number};
@@ -436,12 +436,12 @@ optional<group::block_transfer> chain_group::get_incoming_transfer(
     size_t block_number = (step + 1) - member_index;
     if(member_index > step + 1 || block_number >= num_blocks ||
        member_index == 0) {
-        return boost::none;
+        return std::experimental::nullopt;
     }
     return block_transfer{(uint32_t)(member_index - 1), block_number};
 }
 optional<group::block_transfer> chain_group::get_first_block() const {
-    if(member_index == 0) return boost::none;
+    if(member_index == 0) return std::experimental::nullopt;
     return block_transfer{(uint32_t)(member_index - 1), 0};
 }
 
@@ -463,7 +463,7 @@ size_t sequential_group::get_total_steps() const {
 optional<group::block_transfer> sequential_group::get_outgoing_transfer(
     size_t step) const {
     if(member_index > 0 || step >= num_blocks * (num_members - 1)) {
-        return boost::none;
+        return std::experimental::nullopt;
     }
 
     size_t block_number = step % num_blocks;
@@ -472,14 +472,14 @@ optional<group::block_transfer> sequential_group::get_outgoing_transfer(
 optional<group::block_transfer> sequential_group::get_incoming_transfer(
     size_t step) const {
     if(1 + step / num_blocks != member_index) {
-        return boost::none;
+        return std::experimental::nullopt;
     }
 
     size_t block_number = step % num_blocks;
     return block_transfer{(uint32_t)0, block_number};
 }
 optional<group::block_transfer> sequential_group::get_first_block() const {
-    if(member_index == 0) return boost::none;
+    if(member_index == 0) return std::experimental::nullopt;
     return block_transfer{0, 0};
 }
 
@@ -507,7 +507,7 @@ optional<group::block_transfer> tree_group::get_outgoing_transfer(
     size_t stage = step / num_blocks;
     if(step >= get_total_steps() || (1u << stage) <= member_index ||
        (1u << stage) >= num_members - member_index) {
-        return boost::none;
+        return std::experimental::nullopt;
     } else {
         return block_transfer{member_index + (1u << stage),
                               step - stage * num_blocks};
@@ -521,18 +521,18 @@ optional<group::block_transfer> tree_group::get_incoming_transfer(
         return block_transfer{member_index - (1u << stage),
                               step - stage * num_blocks};
     } else {
-        return boost::none;
+        return std::experimental::nullopt;
     }
 }
 optional<group::block_transfer> tree_group::get_first_block() const {
-    if(member_index == 0) return boost::none;
+    if(member_index == 0) return std::experimental::nullopt;
 
     for(uint32_t i = 0; i < 32; i++) {
         if((2ull << i) > member_index)
             return block_transfer{member_index - (1 << i), 0};
     }
     assert(false);
-    return boost::none;
+    return std::experimental::nullopt;
 }
 binomial_group::binomial_group(uint16_t group_number, size_t block_size,
                                vector<uint32_t> members, uint32_t member_index,
@@ -607,7 +607,7 @@ optional<group::block_transfer> binomial_group::get_vertex_outgoing_transfer(
         //        printf("send_step = %d, neighbor = %d, log2(...) = %f\n",
         // (int)send_step, (int)neighbor, log2(member_index|neighbor));
         //        fflush(stdout);
-        return boost::none;
+        return std::experimental::nullopt;
     }
 
     size_t rotated_rank =
@@ -620,7 +620,7 @@ optional<group::block_transfer> binomial_group::get_vertex_outgoing_transfer(
         if(send_step < log2_num_members) {
             //            printf("send_step < log2_num_members\n");
             //            fflush(stdout);
-            return boost::none;
+            return std::experimental::nullopt;
         }
         return block_transfer{neighbor, send_step - log2_num_members};
     }
@@ -628,7 +628,7 @@ optional<group::block_transfer> binomial_group::get_vertex_outgoing_transfer(
     for(unsigned int index = 1; index < log2_num_members; index++) {
         if(rotated_rank & (1 << index)) {
             if(send_step + index < log2_num_members) {
-                return boost::none;
+                return std::experimental::nullopt;
             }
             size_t block_number =
                 min(send_step + index - log2_num_members, num_blocks - 1);
@@ -648,7 +648,7 @@ optional<group::block_transfer> binomial_group::get_vertex_incoming_transfer(
     auto transfer =
         get_vertex_outgoing_transfer(neighbor, send_step, num_members,
                                      log2_num_members, num_blocks, total_steps);
-    if(!transfer) return boost::none;
+    if(!transfer) return std::experimental::nullopt;
     return block_transfer{neighbor, transfer->block_number};
 }
 optional<group::block_transfer> binomial_group::get_outgoing_transfer(
@@ -661,7 +661,7 @@ optional<group::block_transfer> binomial_group::get_outgoing_transfer(
         vertex, step, num_members, log2_num_members, num_blocks, total_steps);
 
     if(step >= total_steps) {
-        return boost::none;
+        return std::experimental::nullopt;
     } else if(step == total_steps - 1 && num_blocks == 1 &&
               num_members > (1u << log2_num_members)) {
         uint32_t intervertex_receiver =
@@ -681,7 +681,7 @@ optional<group::block_transfer> binomial_group::get_outgoing_transfer(
 
         if((node_has_twin && node == intervertex_receiver) || node == 1 ||
            !target_has_twin)
-            return boost::none;
+            return std::experimental::nullopt;
         else
             return block_transfer{target, 0};
     } else if(node == intervertex_receiver && vertex != 0 &&
@@ -690,7 +690,7 @@ optional<group::block_transfer> binomial_group::get_outgoing_transfer(
             get_intravertex_block(vertex, step, num_members, log2_num_members,
                                   num_blocks, total_steps);
 
-        if(!block) return boost::none;
+        if(!block) return std::experimental::nullopt;
         uint32_t twin = (node < (1u << log2_num_members))
                             ? node + (1 << log2_num_members) - 1
                             : node + 1 - (1 << log2_num_members);
@@ -699,7 +699,7 @@ optional<group::block_transfer> binomial_group::get_outgoing_transfer(
         if(step == total_steps - 1 && num_members > 1u << log2_num_members) {
             if((vertex + (1u << log2_num_members) - 1) >= num_members ||
                vertex == 0)
-                return boost::none;
+                return std::experimental::nullopt;
 
             uint32_t twin = (node < (1u << log2_num_members))
                                 ? node + (1 << log2_num_members) - 1
@@ -744,7 +744,7 @@ optional<group::block_transfer> binomial_group::get_incoming_transfer(
         vertex, step, num_members, log2_num_members, num_blocks, total_steps);
 
     if(step >= total_steps) {
-        return boost::none;
+        return std::experimental::nullopt;
     } else if(step == total_steps - 1 && num_blocks == 1 &&
               num_members > (1u << log2_num_members)) {
         uint32_t target =
@@ -761,7 +761,7 @@ optional<group::block_transfer> binomial_group::get_incoming_transfer(
             target = target + (1 << log2_num_members) - 1;
 
         if(!node_has_twin || node != intervertex_receiver)
-            return boost::none;
+            return std::experimental::nullopt;
         else {
             return block_transfer{target, 0};
         }
@@ -770,7 +770,7 @@ optional<group::block_transfer> binomial_group::get_incoming_transfer(
             get_intravertex_block(vertex, step, num_members, log2_num_members,
                                   num_blocks, total_steps);
 
-        if(!block) return boost::none;
+        if(!block) return std::experimental::nullopt;
         uint32_t twin = (node < (1u << log2_num_members))
                             ? node + (1 << log2_num_members) - 1
                             : node + 1 - (1 << log2_num_members);
@@ -779,7 +779,7 @@ optional<group::block_transfer> binomial_group::get_incoming_transfer(
         if(step == total_steps - 1 && num_members > 1u << log2_num_members) {
             if((vertex + (1u << log2_num_members) - 1) >= num_members ||
                vertex == 0)
-                return boost::none;
+                return std::experimental::nullopt;
 
             uint32_t twin = (node < (1u << log2_num_members))
                                 ? node + (1 << log2_num_members) - 1
@@ -852,7 +852,7 @@ optional<size_t> binomial_group::get_intravertex_block(
     // If the vertex only has one node, then no intravertex transfer can take
     // place.
     if((vertex + (1u << log2_num_members) - 1) >= num_members || vertex == 0)
-        return boost::none;
+        return std::experimental::nullopt;
 
     size_t weight = 0;
     for(int i = 0; i < 32; i++) {
@@ -875,7 +875,7 @@ optional<size_t> binomial_group::get_intravertex_block(
     // The first block received triggers a flip. If we haven't gotten it yet,
     // then clearly there can't be an intravertex transfer.
     if(flips == 0) {
-        return boost::none;
+        return std::experimental::nullopt;
     }
 
     // uint32_t target = vertex;
@@ -885,7 +885,7 @@ optional<size_t> binomial_group::get_intravertex_block(
 
     size_t prev_receive_block_step = step - 1;
     if(flips != total_flips(step - 1)) {
-        if(flips <= 1) return boost::none;
+        if(flips <= 1) return std::experimental::nullopt;
 
         while(total_flips(prev_receive_block_step) != flips - 2) {
             --prev_receive_block_step;
@@ -896,7 +896,7 @@ optional<size_t> binomial_group::get_intravertex_block(
                                              num_members, log2_num_members,
                                              num_blocks, total_steps);
 
-    if(!last) return boost::none;
+    if(!last) return std::experimental::nullopt;
     return last->block_number;
 }
 
@@ -914,7 +914,7 @@ optional<group::block_transfer> binomial_group::get_incoming_transfer(
 }
 
 optional<group::block_transfer> binomial_group::get_first_block() const {
-    if(member_index == 0) return boost::none;
+    if(member_index == 0) return std::experimental::nullopt;
 
     size_t simulated_total_steps = num_members == 1u << log2_num_members
                                        ? 1024 + log2_num_members - 1
