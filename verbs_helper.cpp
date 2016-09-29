@@ -21,6 +21,11 @@ extern "C" {
 #include <infiniband/verbs.h>
 }
 
+#ifdef INFINIBAND_VERBS_EXP_H
+#define CROSS_CHANNEL
+#pragma message(Alert "Experimental Verbs Detected")
+#endif
+
 using namespace std;
 
 namespace rdma {
@@ -243,6 +248,39 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
         fprintf(stderr, "failed to create CQ with %u entries\n", cq_size);
         goto resources_create_exit;
     }
+
+#ifdef CROSS_CHANNEL
+    {
+        ibv_exp_device_attr attr;
+        int ret = ibv_exp_query_device(res->ib_ctx, &attr);
+        assert(ret == 0);
+
+        printf(
+            "cross_channel = %d\n",
+            attr.exp_device_cap_flags & IBV_EXP_DEVICE_CROSS_CHANNEL ? 1 : 0);
+        fflush(stdout);
+
+        printf("INT_OPS: add = %d, band = %d, bxor = %d, bor = %d\n",
+               attr.calc_cap.int_ops & IBV_EXP_CALC_OP_ADD ? 1 : 0,
+               attr.calc_cap.int_ops & IBV_EXP_CALC_OP_BAND ? 1 : 0,
+               attr.calc_cap.int_ops & IBV_EXP_CALC_OP_BXOR ? 1 : 0,
+               attr.calc_cap.int_ops & IBV_EXP_CALC_OP_BOR ? 1 : 0);
+
+        printf("UINT_OPS: add = %d, band = %d, bxor = %d, bor = %d\n",
+               attr.calc_cap.uint_ops & IBV_EXP_CALC_OP_ADD ? 1 : 0,
+               attr.calc_cap.uint_ops & IBV_EXP_CALC_OP_BAND ? 1 : 0,
+               attr.calc_cap.uint_ops & IBV_EXP_CALC_OP_BXOR ? 1 : 0,
+               attr.calc_cap.uint_ops & IBV_EXP_CALC_OP_BOR ? 1 : 0);
+
+        printf("FP_OPS: add = %d, band = %d, bxor = %d, bor = %d\n",
+               attr.calc_cap.fp_ops & IBV_EXP_CALC_OP_ADD ? 1 : 0,
+               attr.calc_cap.fp_ops & IBV_EXP_CALC_OP_BAND ? 1 : 0,
+               attr.calc_cap.fp_ops & IBV_EXP_CALC_OP_BXOR ? 1 : 0,
+               attr.calc_cap.fp_ops & IBV_EXP_CALC_OP_BOR ? 1 : 0);
+
+        fflush(stdout);
+    }
+#endif
 
     TRACE("verbs_initialize() - SUCCESS");
     return true;
@@ -602,6 +640,90 @@ bool queue_pair::post_write(const memory_region &mr, size_t offset,
     return true;
 }
 
+#ifdef CROSS_CHANNEL
+cross_channel_queue_pair::cross_channel_queue_pair(
+    size_t remote_index, std::function<void(queue_pair *)> post_recvs)
+    : queue_pair() {
+    auto it = sockets.find(remote_index);
+    if(it == sockets.end()) throw rdma::invalid_args();
+
+    auto &sock = it->second;
+
+    ibv_exp_qp_init_attr qp_init_attr;
+    memset(&qp_init_attr, 0, sizeof(qp_init_attr));
+    qp_init_attr.qp_type = IBV_QPT_RC;
+    qp_init_attr.sq_sig_all = 1;
+    qp_init_attr.send_cq = verbs_resources.cq;
+    qp_init_attr.recv_cq = verbs_resources.cq;
+    qp_init_attr.cap.max_send_wr = 16;
+    qp_init_attr.cap.max_recv_wr = 16;
+    qp_init_attr.cap.max_send_sge = 1;
+    qp_init_attr.cap.max_recv_sge = 1;
+
+    qp_init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL |
+                                    IBV_EXP_QP_CREATE_MANAGED_SEND |
+                                    IBV_EXP_QP_CREATE_MANAGED_RECV;
+
+    qp = unique_ptr<ibv_qp, std::function<void(ibv_qp *)>>(
+        ibv_exp_create_qp(verbs_resources.pd, &qp_init_attr),
+        [](ibv_qp *q) { ibv_destroy_qp(q); });
+
+    if(!qp) {
+        fprintf(stderr, "failed to create QP\n");
+        throw rdma::qp_creation_failure();
+    }
+
+    struct cm_con_data_t local_con_data;
+    struct cm_con_data_t remote_con_data;
+    memset(&local_con_data, 0, sizeof(local_con_data));
+    memset(&remote_con_data, 0, sizeof(remote_con_data));
+    union ibv_gid my_gid;
+
+    if(local_config.gid_idx >= 0) {
+        int rc = ibv_query_gid(verbs_resources.ib_ctx, local_config.ib_port,
+                               local_config.gid_idx, &my_gid);
+        if(rc) {
+            fprintf(stderr, "could not get gid for port %d, index %d\n",
+                    local_config.ib_port, local_config.gid_idx);
+            return;
+        }
+    } else {
+        memset(&my_gid, 0, sizeof my_gid);
+    }
+
+    /* exchange using TCP sockets info required to connect QPs */
+    local_con_data.qp_num = qp->qp_num;
+    local_con_data.lid = verbs_resources.port_attr.lid;
+    memcpy(local_con_data.gid, &my_gid, 16);
+    // fprintf(stdout, "Local QP number  = 0x%x\n", qp->qp_num);
+    // fprintf(stdout, "Local LID        = 0x%x\n",
+    // verbs_resources.port_attr.lid);
+
+    if(!sock.exchange(local_con_data, remote_con_data))
+        throw rdma::qp_creation_failure();
+
+    bool success =
+        !modify_qp_to_init(qp.get(), local_config.ib_port) &&
+        !modify_qp_to_rtr(qp.get(), remote_con_data.qp_num, remote_con_data.lid,
+                          remote_con_data.gid, local_config.ib_port,
+                          local_config.gid_idx) &&
+        !modify_qp_to_rts(qp.get());
+
+    if(!success) throw rdma::qp_creation_failure();
+
+    post_recvs(this);
+
+    // Sync to make sure that both sides are in states that they can connect to
+    // prevent packet loss.
+    int tmp = -1;
+    if(!sock.exchange(0, tmp) || tmp != 0) throw rdma::qp_creation_failure();
+}
+#else
+cross_channel_queue_pair::cross_channel_queue_pair(
+    size_t remote_index, std::function<void(queue_pair *)> post_recvs)
+    : queue_pair(remote_index, post_recvs) {}
+
+#endif
 // int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {
 //     while(true) {
 //         int poll_result = ibv_poll_cq(verbs_resources.cq, num, wcs);

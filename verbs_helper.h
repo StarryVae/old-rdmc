@@ -64,10 +64,13 @@ public:
  * has been run, since it depends on global Verbs resources.
  */
 class queue_pair {
+protected:
     std::unique_ptr<ibv_qp, std::function<void(ibv_qp*)>> qp;
 
+    explicit queue_pair() {}
+
 public:
-    ~queue_pair();
+    virtual ~queue_pair();
     explicit queue_pair(size_t remote_index);
     queue_pair(size_t remote_index,
                std::function<void(queue_pair*)> post_recvs);
@@ -84,6 +87,14 @@ public:
                     uint64_t wr_id, remote_memory_region remote_mr,
                     size_t remote_offset, bool signaled = false,
                     bool send_inline = false);
+};
+
+class cross_channel_queue_pair : queue_pair {
+public:
+    explicit cross_channel_queue_pair(size_t remote_index)
+        : cross_channel_queue_pair(remote_index, [](queue_pair*) {}) {}
+    cross_channel_queue_pair(size_t remote_index,
+                             std::function<void(queue_pair*)> post_recvs);
 };
 
 namespace impl {
