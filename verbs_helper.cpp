@@ -180,14 +180,14 @@ static int modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn,
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;
     attr.min_rnr_timer = 16;
-    attr.ah_attr.is_global = 1;
+    attr.ah_attr.is_global = 0;
     attr.ah_attr.dlid = dlid;
     attr.ah_attr.sl = 0;
     attr.ah_attr.src_path_bits = 0;
     attr.ah_attr.port_num = ib_port;
     if(gid_idx >= 0) {
         attr.ah_attr.is_global = 1;
-        attr.ah_attr.port_num = 1;
+        attr.ah_attr.port_num = 1;  // TODO: is this right?
         memcpy(&attr.ah_attr.grh.dgid, dgid, 16);
         attr.ah_attr.grh.flow_label = 0;
         attr.ah_attr.grh.hop_limit = 0xFF;
@@ -534,9 +534,35 @@ memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
 //     }
 // }
 uint32_t memory_region::get_rkey() const { return mr->rkey; }
-queue_pair::~queue_pair() {
-    //    if(qp) cout << "Destroying Queue Pair..." << endl;
+
+completion_queue::completion_queue(bool cross_channel) {
+    ibv_cq *cq_ptr = nullptr;
+    if(!cross_channel) {
+        cq_ptr =
+            ibv_create_cq(verbs_resources.ib_ctx, 1024, nullptr, nullptr, 0);
+    } else {
+#ifdef CROSS_CHANNEL
+        ibv_exp_cq_init_attr attr;
+        attr.comp_mask = IBV_EXP_CQ_INIT_ATTR_FLAGS;
+        attr.flags = IBV_EXP_CQ_CREATE_CROSS_CHANNEL;
+        cq_ptr = ibv_exp_create_cq(verbs_resources.ib_ctx, 4, nullptr, nullptr,
+                                   0, &attr);
+
+        ibv_exp_cq_attr mod_attr;
+        mod_attr.comp_mask = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
+        mod_attr.cq_cap_flags = IBV_EXP_CQ_IGNORE_OVERRUN;
+        ibv_exp_modify_cq(cq_ptr, &mod_attr, IBV_EXP_CQ_CAP_FLAGS);
+#else
+        throw invalid_args();
+#endif
+    }
+    if(!cq_ptr) {
+        throw cq_creation_failure();
+    }
+
+    cq = decltype(cq)(cq_ptr, [](ibv_cq *q) { ibv_destroy_cq(q); });
 }
+
 queue_pair::queue_pair(size_t remote_index)
     : queue_pair(remote_index, [](queue_pair *) {}) {}
 
@@ -767,10 +793,9 @@ bool queue_pair::post_write(const memory_region &mr, size_t offset,
 }
 
 #ifdef CROSS_CHANNEL
-cross_channel_queue_pair::cross_channel_queue_pair(
-    size_t remote_index,
-    std::function<void(cross_channel_queue_pair *)> post_recvs)
-    : queue_pair() {
+managed_queue_pair::managed_queue_pair(
+    size_t remote_index, std::function<void(managed_queue_pair *)> post_recvs)
+    : queue_pair(), scq(true), rcq(true) {
     auto it = sockets.find(remote_index);
     if(it == sockets.end()) throw rdma::invalid_args();
 
@@ -779,8 +804,8 @@ cross_channel_queue_pair::cross_channel_queue_pair(
     ibv_exp_qp_init_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.qp_context = nullptr;
-    attr.send_cq = verbs_resources.cq;
-    attr.recv_cq = verbs_resources.cq;
+    attr.send_cq = scq.cq.get();
+    attr.recv_cq = rcq.cq.get();
     attr.srq = nullptr;
     attr.cap.max_send_wr = 16;
     attr.cap.max_recv_wr = 16;
@@ -794,13 +819,12 @@ cross_channel_queue_pair::cross_channel_queue_pair(
     attr.pd = verbs_resources.pd;
     attr.xrcd = nullptr;
     attr.exp_create_flags =
-        IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND;  //|
+        IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND;
     //		IBV_EXP_QP_CREATE_MANAGED_RECV;
     attr.max_inl_recv = 0;
 
-    qp = unique_ptr<ibv_qp, std::function<void(ibv_qp *)>>(
-        ibv_exp_create_qp(verbs_resources.ib_ctx, &attr),
-        [](ibv_qp *q) { ibv_destroy_qp(q); });
+    qp = decltype(qp)(ibv_exp_create_qp(verbs_resources.ib_ctx, &attr),
+                      [](ibv_qp *q) { ibv_destroy_qp(q); });
 
     if(!qp) {
         fprintf(stderr, "failed to create QP, (errno = %s)\n", strerror(errno));
@@ -851,6 +875,42 @@ cross_channel_queue_pair::cross_channel_queue_pair(
     // prevent packet loss.
     int tmp = -1;
     if(!sock.exchange(0, tmp) || tmp != 0) throw rdma::qp_creation_failure();
+}
+manager_queue_pair::manager_queue_pair() : queue_pair() {
+    ibv_exp_qp_init_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_context = nullptr;
+    attr.send_cq = verbs_resources.cq;
+    attr.recv_cq = verbs_resources.cq;
+    attr.srq = nullptr;
+    attr.cap.max_send_wr = 4096;
+    attr.cap.max_recv_wr = 0;
+    attr.cap.max_send_sge = 1;
+    attr.cap.max_recv_sge = 1;
+    attr.cap.max_inline_data = 0;
+    attr.qp_type = IBV_QPT_RC;
+    attr.sq_sig_all = 0;
+    attr.comp_mask =
+        IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
+    attr.pd = verbs_resources.pd;
+    attr.xrcd = nullptr;
+    attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+    attr.max_inl_recv = 0;
+
+    qp = decltype(qp)(ibv_exp_create_qp(verbs_resources.ib_ctx, &attr),
+                      [](ibv_qp *q) { ibv_destroy_qp(q); });
+
+    if(!qp) {
+        fprintf(stderr, "failed to create QP, (errno = %s)\n", strerror(errno));
+        throw rdma::qp_creation_failure();
+    }
+
+    bool success = !modify_qp_to_init(qp.get(), local_config.ib_port) &&
+                   !modify_qp_to_rtr(qp.get(), qp->qp_num, 0, nullptr,
+                                     local_config.ib_port, -1) &&
+                   !modify_qp_to_rts(qp.get());
+
+    if(!success) throw rdma::qp_creation_failure();
 }
 #else
 cross_channel_queue_pair::cross_channel_queue_pair(
@@ -945,17 +1005,20 @@ ibv_comp_channel *verbs_get_completion_channel() { return verbs_resources.cc; }
 void ccc_test(uint32_t node_rank) {
     if(node_rank >= 2) return;
 
+	static message_type mtype("ccc-test", nullptr, nullptr);
+	
     // Some constants
-    const int size = 1024;
+    const int size = 16;
     const uint32_t other_node = node_rank == 0 ? 1 : 0;
 
     // Setup memory region
     auto buffer = make_unique<char[]>(size * 2);
     memory_region mr{buffer.get(), size * 2};
-    memset(buffer.get(), node_rank + 5, size);
+    memset(buffer.get(), 5 + node_rank, size);
 
-    cross_channel_queue_pair qp(other_node, [&](cross_channel_queue_pair *qp) {
-        qp->post_recv(mr, size, size, 123);
+    manager_queue_pair mqp;
+    managed_queue_pair qp(other_node, [&](managed_queue_pair *qp) {
+        qp->post_recv(mr, size, size, 123, mtype);
     });
 
     ibv_sge sge;
@@ -980,10 +1043,10 @@ void ccc_test(uint32_t node_rank) {
     wr[1].sg_list = nullptr;
     wr[1].num_sge = 0;
     wr[1].exp_opcode = IBV_EXP_WR_SEND_ENABLE;
-    wr[1].exp_send_flags = IBV_SEND_SIGNALED;
+    wr[1].exp_send_flags = 0;  // IBV_EXP_SEND_WAIT_EN_LAST;
     wr[1].ex.imm_data = 0;
     wr[1].task.wqe_enable.qp = qp.get_ptr();
-    wr[1].task.wqe_enable.wqe_count = 1;
+    wr[1].task.wqe_enable.wqe_count = 0;
     wr[1].comp_mask = 0;
 
     tasks[0].item.qp = qp.get_ptr();
@@ -992,7 +1055,7 @@ void ccc_test(uint32_t node_rank) {
     tasks[0].next = &tasks[1];
     tasks[0].comp_mask = 0;
 
-    tasks[1].item.qp = qp.get_ptr();
+    tasks[1].item.qp = mqp.get_ptr();
     tasks[1].item.send_wr = &wr[1];
     tasks[1].task_type = IBV_EXP_TASK_SEND;
     tasks[1].next = nullptr;
@@ -1002,17 +1065,18 @@ void ccc_test(uint32_t node_rank) {
     fflush(stdout);
 
     ibv_exp_task *bad = nullptr;
-    int ret = ibv_exp_post_task(verbs_resources.ib_ctx, tasks, &bad);
+    int ret = ibv_exp_post_task(verbs_resources.ib_ctx, &tasks[0], &bad);
     if(ret) {
-        printf("Post task failed with ret = %d, bad = %d\n", ret,
-               (int)(tasks - bad) / sizeof(*bad));
+        printf("Post task failed with ret = %d, bad = %p, &tasks[0] = %p\n",
+               ret, bad, tasks);
         fflush(stdout);
     }
     puts("Posted Task");
     fflush(stdout);
 
-    while(buffer[size * 2 - 1] == 0)
-        ;
+    while(((volatile char *)buffer.get())[size * 2 - 1] == 0) {
+        // Do nothing.
+    }
 
     puts("Transfer Complete");
     fflush(stdout);

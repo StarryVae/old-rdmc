@@ -13,6 +13,7 @@
 #include <vector>
 
 struct ibv_mr;
+struct ibv_cq;
 struct ibv_qp;
 
 /**
@@ -28,6 +29,7 @@ class invalid_args : public exception {};
 class connection_broken : public exception {};
 class creation_failure : public exception {};
 class mr_creation_failure : public creation_failure {};
+class cq_creation_failure : public creation_failure {};
 class qp_creation_failure : public creation_failure {};
 class message_types_exhausted : public exception {};
 
@@ -61,6 +63,16 @@ public:
     const uint32_t rkey;
 };
 
+class completion_queue {
+    std::unique_ptr<ibv_cq, std::function<void(ibv_cq*)>> cq;
+
+    friend class managed_queue_pair;
+    friend class manager_queue_pair;
+
+public:
+    explicit completion_queue(bool cross_channel);
+};
+
 typedef std::function<void(uint64_t tag, uint32_t immediate, size_t length)>
     completion_handler;
 
@@ -78,7 +90,7 @@ public:
                  completion_handler recv_handler);
     message_type() {}
 };
-
+ 
 /**
  * A C++ wrapper for the IB Verbs ibv_qp struct and its associated functions.
  * Instances of this class can only be created after global Verbs initialization
@@ -91,7 +103,7 @@ protected:
     explicit queue_pair() {}
 
 public:
-    virtual ~queue_pair();
+    virtual ~queue_pair() {}
     explicit queue_pair(size_t remote_index);
     queue_pair(size_t remote_index,
                std::function<void(queue_pair*)> post_recvs);
@@ -112,14 +124,17 @@ public:
                     bool send_inline = false);
 };
 
-class cross_channel_queue_pair : public queue_pair {
+class managed_queue_pair : public queue_pair {
+    completion_queue scq, rcq;
+
 public:
-    explicit cross_channel_queue_pair(size_t remote_index)
-        : cross_channel_queue_pair(remote_index,
-                                   [](cross_channel_queue_pair*) {}) {}
-    cross_channel_queue_pair(
-        size_t remote_index,
-        std::function<void(cross_channel_queue_pair*)> post_recvs);
+    managed_queue_pair(size_t remote_index,
+                       std::function<void(managed_queue_pair*)> post_recvs);
+    ibv_qp* get_ptr() { return qp.get(); }
+};
+class manager_queue_pair : public queue_pair {
+public:
+    explicit manager_queue_pair();
     ibv_qp* get_ptr() { return qp.get(); }
 };
 
