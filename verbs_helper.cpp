@@ -807,8 +807,8 @@ managed_queue_pair::managed_queue_pair(
     attr.send_cq = scq.cq.get();
     attr.recv_cq = rcq.cq.get();
     attr.srq = nullptr;
-    attr.cap.max_send_wr = 16;
-    attr.cap.max_recv_wr = 16;
+    attr.cap.max_send_wr = 10000;
+    attr.cap.max_recv_wr = 10000;
     attr.cap.max_send_sge = 1;
     attr.cap.max_recv_sge = 1;
     attr.cap.max_inline_data = 0;
@@ -883,7 +883,7 @@ manager_queue_pair::manager_queue_pair() : queue_pair() {
     attr.send_cq = verbs_resources.cq;
     attr.recv_cq = verbs_resources.cq;
     attr.srq = nullptr;
-    attr.cap.max_send_wr = 4096;
+    attr.cap.max_send_wr = 20000;
     attr.cap.max_recv_wr = 0;
     attr.cap.max_send_sge = 1;
     attr.cap.max_recv_sge = 1;
@@ -1008,7 +1008,7 @@ void ccc_test(uint32_t node_rank) {
 	static message_type mtype("ccc-test", nullptr, nullptr);
 	
     // Some constants
-    const int size = 16;
+    constexpr int size = 10000;
     const uint32_t other_node = node_rank == 0 ? 1 : 0;
 
     // Setup memory region
@@ -1018,51 +1018,71 @@ void ccc_test(uint32_t node_rank) {
 
     manager_queue_pair mqp;
     managed_queue_pair qp(other_node, [&](managed_queue_pair *qp) {
-        qp->post_recv(mr, size, size, 123, mtype);
+        for(int i = 0; i < size; i++)
+            qp->post_recv(mr, size + i, 1, 123, mtype);
     });
 
-    ibv_sge sge;
-    ibv_exp_send_wr wr[2];
+    ibv_sge *sge = new ibv_sge[size];
+    ibv_exp_send_wr *send_wr = new ibv_exp_send_wr[size];
+    ibv_exp_send_wr *enable_wr = new ibv_exp_send_wr[size];
+    ibv_exp_send_wr *wait_wr = new ibv_exp_send_wr[size];
     ibv_exp_task tasks[2];
 
-    sge.addr = (uintptr_t)buffer.get();
-    sge.length = size;
-    sge.lkey = mr.mr->lkey;
+    for(int i = 0; i < size; i++) {
+        sge[i].addr = (uintptr_t)buffer.get() + i;
+        sge[i].length = 1;
+        sge[i].lkey = mr.mr->lkey;
 
-    wr[0].wr_id = 97;
-    wr[0].next = nullptr;  // &wr[1];
-    wr[0].sg_list = &sge;
-    wr[0].num_sge = 1;
-    wr[0].exp_opcode = IBV_EXP_WR_SEND;
-    wr[0].exp_send_flags = IBV_SEND_SIGNALED;
-    wr[0].ex.imm_data = 0;
-    wr[0].comp_mask = 0;
+        send_wr[i].wr_id = 97;
+        send_wr[i].next = (i < size - 1) ? &send_wr[i + 1] : nullptr;
+        send_wr[i].sg_list = sge + i;
+        send_wr[i].num_sge = 1;
+        send_wr[i].exp_opcode = IBV_EXP_WR_SEND;
+        send_wr[i].exp_send_flags = 0;  // IBV_SEND_SIGNALED;
+        send_wr[i].ex.imm_data = 0;
+        send_wr[i].comp_mask = 0;
+    }
 
-    wr[1].wr_id = 98;
-    wr[1].next = nullptr;
-    wr[1].sg_list = nullptr;
-    wr[1].num_sge = 0;
-    wr[1].exp_opcode = IBV_EXP_WR_SEND_ENABLE;
-    wr[1].exp_send_flags = 0;  // IBV_EXP_SEND_WAIT_EN_LAST;
-    wr[1].ex.imm_data = 0;
-    wr[1].task.wqe_enable.qp = qp.get_ptr();
-    wr[1].task.wqe_enable.wqe_count = 0;
-    wr[1].comp_mask = 0;
+    for(int i = 0; i < size; i++) {
+        enable_wr[i].wr_id = 98;
+        enable_wr[i].next = &wait_wr[i];
+        enable_wr[i].sg_list = nullptr;
+        enable_wr[i].num_sge = 0;
+        enable_wr[i].exp_opcode = IBV_EXP_WR_SEND_ENABLE;
+        enable_wr[i].exp_send_flags = 0;  // IBV_EXP_SEND_WAIT_EN_LAST;
+        enable_wr[i].ex.imm_data = 0;
+        enable_wr[i].task.wqe_enable.qp = qp.get_ptr();
+        enable_wr[i].task.wqe_enable.wqe_count = i + 1;
+        enable_wr[i].comp_mask = 0;
+
+        wait_wr[i].wr_id = 98;
+        wait_wr[i].next = (i < size - 1) ? &enable_wr[i + 1] : nullptr;
+        wait_wr[i].sg_list = nullptr;
+        wait_wr[i].num_sge = 0;
+        wait_wr[i].exp_opcode = IBV_EXP_WR_CQE_WAIT;
+        wait_wr[i].exp_send_flags = 0;
+        wait_wr[i].ex.imm_data = 0;
+        wait_wr[i].task.cqe_wait.cq = qp.rcq.cq.get();
+        wait_wr[i].task.cqe_wait.cq_count = i + 1;
+        wait_wr[i].comp_mask = 0;
+    }
 
     tasks[0].item.qp = qp.get_ptr();
-    tasks[0].item.send_wr = &wr[0];
+    tasks[0].item.send_wr = &send_wr[0];
     tasks[0].task_type = IBV_EXP_TASK_SEND;
     tasks[0].next = &tasks[1];
     tasks[0].comp_mask = 0;
 
     tasks[1].item.qp = mqp.get_ptr();
-    tasks[1].item.send_wr = &wr[1];
+    tasks[1].item.send_wr = &enable_wr[0];
     tasks[1].task_type = IBV_EXP_TASK_SEND;
     tasks[1].next = nullptr;
     tasks[1].comp_mask = 0;
 
     puts("About to post task");
     fflush(stdout);
+
+    auto t = get_time();
 
     ibv_exp_task *bad = nullptr;
     int ret = ibv_exp_post_task(verbs_resources.ib_ctx, &tasks[0], &bad);
@@ -1078,7 +1098,12 @@ void ccc_test(uint32_t node_rank) {
         // Do nothing.
     }
 
+    t = get_time() - t;
+
     puts("Transfer Complete");
     fflush(stdout);
+
+    printf("Time elapsed = %f ms (%f us per round)\n", 1e-6 * t,
+           1e-3 * t / size);
 }
 }

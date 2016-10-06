@@ -64,12 +64,8 @@ public:
 };
 
 class completion_queue {
-    std::unique_ptr<ibv_cq, std::function<void(ibv_cq*)>> cq;
-
-    friend class managed_queue_pair;
-    friend class manager_queue_pair;
-
 public:
+    std::unique_ptr<ibv_cq, std::function<void(ibv_cq*)>> cq;
     explicit completion_queue(bool cross_channel);
 };
 
@@ -125,9 +121,8 @@ public:
 };
 
 class managed_queue_pair : public queue_pair {
-    completion_queue scq, rcq;
-
 public:
+    completion_queue scq, rcq;
     managed_queue_pair(size_t remote_index,
                        std::function<void(managed_queue_pair*)> post_recvs);
     ibv_qp* get_ptr() { return qp.get(); }
