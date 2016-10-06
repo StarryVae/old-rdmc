@@ -40,6 +40,7 @@ class message_types_exhausted : public exception {};
 class memory_region {
     std::unique_ptr<ibv_mr, std::function<void(ibv_mr*)>> mr;
     friend class queue_pair;
+    friend void ccc_test(uint32_t);
 
 public:
     memory_region(char* buffer, size_t size);
@@ -111,12 +112,15 @@ public:
                     bool send_inline = false);
 };
 
-class cross_channel_queue_pair : queue_pair {
+class cross_channel_queue_pair : public queue_pair {
 public:
     explicit cross_channel_queue_pair(size_t remote_index)
-        : cross_channel_queue_pair(remote_index, [](queue_pair*) {}) {}
-    cross_channel_queue_pair(size_t remote_index,
-                             std::function<void(queue_pair*)> post_recvs);
+        : cross_channel_queue_pair(remote_index,
+                                   [](cross_channel_queue_pair*) {}) {}
+    cross_channel_queue_pair(
+        size_t remote_index,
+        std::function<void(cross_channel_queue_pair*)> post_recvs);
+    ibv_qp* get_ptr() { return qp.get(); }
 };
 
 namespace impl {
@@ -136,5 +140,7 @@ std::map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     const std::vector<uint32_t>& members, uint32_t node_rank,
     const memory_region& mr);
 }
+void ccc_test(uint32_t node_rank);
 }
+
 #endif /* VERBS_HELPER_H */

@@ -7,9 +7,9 @@
 #include <cstring>
 #include <iostream>
 #include <netdb.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace tcp {
@@ -120,8 +120,11 @@ connection_listener::connection_listener(int port) {
                 strerror(errno));
     listen(listenfd, 5);
 
-    fd = unique_ptr<int, std::function<void(int *)>>(
-        new int(listenfd), [](int *fd) { close(*fd); });
+    fd = unique_ptr<int, std::function<void(int *)>>(new int(listenfd),
+                                                     [](int *fd) {
+                                                         close(*fd);
+                                                         delete fd;
+                                                     });
 }
 
 socket connection_listener::accept() {

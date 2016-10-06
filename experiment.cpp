@@ -896,9 +896,10 @@ int main(int argc, char *argv[]) {
 
     printf("Experiment Name: %s\n", argv[1]);
     if(argc <= 1 || strcmp(argv[1], "custom") == 0) {
-        for(int i = 0; i < 3; i++) {
-            large_send();
-        }
+        ccc_test(node_rank);
+        // for(int i = 0; i < 3; i++) {
+        //     large_send();
+        // }
     } else if(strcmp(argv[1], "blocksize4") == 0) {
         blocksize_v_bandwidth(4);
     } else if(strcmp(argv[1], "blocksize16") == 0) {
