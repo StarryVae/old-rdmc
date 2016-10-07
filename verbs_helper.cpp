@@ -25,6 +25,7 @@ extern "C" {
 
 #ifdef INFINIBAND_VERBS_EXP_H
 #define CROSS_CHANNEL
+#define ON_DEMAND_PAGING
 #pragma message "Experimental Verbs Detected"
 #endif
 
@@ -483,28 +484,33 @@ bool verbs_add_connection(uint32_t index, const string &address,
 }
 }
 memory_region::memory_region(char *buf, size_t s) : buffer(buf), size(s) {
-    if(!buffer || size == 0) throw rdma::invalid_args();
+#ifdef ON_DEMAND_PAGING
+    if(size == IBV_EXP_IMPLICIT_MR_SIZE) {
+        ibv_exp_reg_mr_in in;
+        in.pd = verbs_resources.pd;
+        in.addr = 0;
+        in.length = IBV_EXP_IMPLICIT_MR_SIZE;
+        in.exp_access = IBV_ACCESS_LOCAL_WRITE | IBV_EXP_ACCESS_ON_DEMAND;
+        mr = unique_ptr<ibv_mr, std::function<void(ibv_mr *)>>(
+            ibv_exp_reg_mr(&in), [](ibv_mr *m) { ibv_dereg_mr(m); });
+    } else
+#endif
+    {
+        if(!buffer || size == 0) throw rdma::invalid_args();
 
-    int mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
-                   IBV_ACCESS_REMOTE_WRITE;
+        int mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+                       IBV_ACCESS_REMOTE_WRITE;
 
-    // printf("MR Protection Domain = %p\n", verbs_resources.pd);
-
-    mr = unique_ptr<ibv_mr, std::function<void(ibv_mr *)>>(
-        ibv_reg_mr(verbs_resources.pd, const_cast<void *>((const void *)buffer),
-                   size, mr_flags),
-        [](ibv_mr *m) { ibv_dereg_mr(m); });
-
+        mr = unique_ptr<ibv_mr, std::function<void(ibv_mr *)>>(
+            ibv_reg_mr(verbs_resources.pd,
+                       const_cast<void *>((const void *)buffer), size,
+                       mr_flags),
+            [](ibv_mr *m) { ibv_dereg_mr(m); });
+    }
     if(!mr) {
-        fprintf(stderr, "ERROR: ibv_reg_mr failed with mr_flags=0x%x\n",
-                mr_flags);
+        fprintf(stderr, "ERROR: Failed to register memory region\n");
         throw rdma::mr_creation_failure();
     }
-
-    // fprintf(
-    //     stdout,
-    //     "MR was registered with addr=%p, lkey=0x%x, rkey=0x%x, flags=0x%x\n",
-    //     buffer, mr->lkey, mr->rkey, mr_flags);
 }
 // memory_region::memory_region(ibv_mr *_mr)
 //     : mr(_mr, [](ibv_mr *m) { ibv_dereg_mr(m); }),
@@ -818,9 +824,9 @@ managed_queue_pair::managed_queue_pair(
         IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
     attr.pd = verbs_resources.pd;
     attr.xrcd = nullptr;
-    attr.exp_create_flags =
-        IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND;
-    //		IBV_EXP_QP_CREATE_MANAGED_RECV;
+    attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL |
+                            IBV_EXP_QP_CREATE_MANAGED_SEND |
+                            IBV_EXP_QP_CREATE_MANAGED_RECV;
     attr.max_inl_recv = 0;
 
     qp = decltype(qp)(ibv_exp_create_qp(verbs_resources.ib_ctx, &attr),
@@ -883,7 +889,7 @@ manager_queue_pair::manager_queue_pair() : queue_pair() {
     attr.send_cq = verbs_resources.cq;
     attr.recv_cq = verbs_resources.cq;
     attr.srq = nullptr;
-    attr.cap.max_send_wr = 20000;
+    attr.cap.max_send_wr = 30005;
     attr.cap.max_recv_wr = 0;
     attr.cap.max_send_sge = 1;
     attr.cap.max_recv_sge = 1;
@@ -1002,108 +1008,187 @@ ibv_cq *verbs_get_cq() { return verbs_resources.cq; }
 ibv_comp_channel *verbs_get_completion_channel() { return verbs_resources.cc; }
 }
 
-void ccc_test(uint32_t node_rank) {
-    if(node_rank >= 2) return;
+double ccc_test(uint32_t node_rank, int chunk_size) {
+    if(node_rank >= 2) return 0;
+
+    // static memory_region mr{0, IBV_EXP_IMPLICIT_MR_SIZE};
 
 	static message_type mtype("ccc-test", nullptr, nullptr);
 	
     // Some constants
-    constexpr int size = 10000;
+    constexpr int max_steps = 10000;
+    int steps = min(max_steps, (1 << 30) / chunk_size);
+    //    constexpr int chunk_size = 1;
+    int buffer_size = chunk_size * 3;  //(steps + 1);
     const uint32_t other_node = node_rank == 0 ? 1 : 0;
 
     // Setup memory region
-    auto buffer = make_unique<char[]>(size * 2);
-    memory_region mr{buffer.get(), size * 2};
-    memset(buffer.get(), 5 + node_rank, size);
+    auto buffer = make_unique<char[]>(buffer_size);
+    memset(buffer.get(), 1 + node_rank, buffer_size);
+    memset(buffer.get(), node_rank * 10 + 10, chunk_size);
+    buffer[buffer_size - 1] = 0;
+
+    // struct ibv_exp_prefetch_attr prefetch_attr;
+    // prefetch_attr.flags = IBV_EXP_PREFETCH_WRITE_ACCESS;
+    // prefetch_attr.addr = buffer.get();
+    // prefetch_attr.length = buffer_size;
+    // prefetch_attr.comp_mask = 0;
+    // ibv_exp_prefetch_mr(mr.mr.get(), &prefetch_attr);
+
+    memory_region mr{buffer.get(), (size_t)buffer_size};
 
     manager_queue_pair mqp;
     managed_queue_pair qp(other_node, [&](managed_queue_pair *qp) {
-        for(int i = 0; i < size; i++)
-            qp->post_recv(mr, size + i, 1, 123, mtype);
+        qp->post_recv(mr, chunk_size, chunk_size, 125, mtype);
+
+        ibv_exp_send_wr wr;
+        wr.wr_id = 0x3000000;
+        wr.next = nullptr;
+        wr.sg_list = nullptr;
+        wr.num_sge = 0;
+        wr.exp_opcode = IBV_EXP_WR_RECV_ENABLE;
+        wr.exp_send_flags = 0;
+        wr.ex.imm_data = 0;
+        wr.task.wqe_enable.qp = qp->get_ptr();
+        wr.task.wqe_enable.wqe_count = 1;
+        wr.comp_mask = 0;
+
+        int ret = ibv_exp_post_send(mqp.get_ptr(), &wr, nullptr);
+        if(ret) {
+            printf("Exp Post send failed with ret = %d\n", ret);
+            fflush(stdout);
+        }
     });
 
-    ibv_sge *sge = new ibv_sge[size];
-    ibv_exp_send_wr *send_wr = new ibv_exp_send_wr[size];
-    ibv_exp_send_wr *enable_wr = new ibv_exp_send_wr[size];
-    ibv_exp_send_wr *wait_wr = new ibv_exp_send_wr[size];
-    ibv_exp_task tasks[2];
+    auto send_sge = make_unique<ibv_sge[]>(steps);
+    auto recv_sge = make_unique<ibv_sge[]>(steps);
 
-    for(int i = 0; i < size; i++) {
-        sge[i].addr = (uintptr_t)buffer.get() + i;
-        sge[i].length = 1;
-        sge[i].lkey = mr.mr->lkey;
+    auto send_wr = make_unique<ibv_exp_send_wr[]>(steps);
+    auto recv_wr = make_unique<ibv_recv_wr[]>(steps);
+    auto enable_wr = make_unique<ibv_exp_send_wr[]>(steps);
+    auto recv_enable_wr = make_unique<ibv_exp_send_wr[]>(steps);
+    auto wait_wr = make_unique<ibv_exp_send_wr[]>(steps);
 
-        send_wr[i].wr_id = 97;
-        send_wr[i].next = (i < size - 1) ? &send_wr[i + 1] : nullptr;
-        send_wr[i].sg_list = sge + i;
+    ibv_exp_task tasks[3];
+
+    for(int i = 1; i < steps; i++) {
+        bool last_recv = (i == steps - 1);
+        recv_sge[i].addr =
+            last_recv ? (uintptr_t)buffer.get() + 2 * chunk_size
+                      : (uintptr_t)buffer.get() + ((i + 1) % 2) * chunk_size;
+        recv_sge[i].length = chunk_size;
+        recv_sge[i].lkey = mr.mr->lkey;
+        recv_wr[i].wr_id = i + 0x1000000;
+        recv_wr[i].next = last_recv ? nullptr : &recv_wr[i + 1];
+        recv_wr[i].sg_list = &recv_sge[i];
+        recv_wr[i].num_sge = 1;
+    }
+
+    for(int i = 0; i < steps; i++) {
+        bool last_send = (i == steps - 1);
+        send_sge[i].addr = (uintptr_t)buffer.get() + (i % 2) * chunk_size;
+        send_sge[i].length = chunk_size;
+        send_sge[i].lkey = mr.mr->lkey;
+        send_wr[i].wr_id = i + 0x2000000;
+        send_wr[i].next = last_send ? nullptr : &send_wr[i + 1];
+        send_wr[i].sg_list = &send_sge[i];
         send_wr[i].num_sge = 1;
         send_wr[i].exp_opcode = IBV_EXP_WR_SEND;
-        send_wr[i].exp_send_flags = 0;  // IBV_SEND_SIGNALED;
+        send_wr[i].exp_send_flags =
+            0;  // IBV_EXP_SEND_WAIT_EN_LAST;  // IBV_SEND_SIGNALED;
         send_wr[i].ex.imm_data = 0;
         send_wr[i].comp_mask = 0;
     }
 
-    for(int i = 0; i < size; i++) {
-        enable_wr[i].wr_id = 98;
+    for(int i = 0; i < steps; i++) {
+        // Step 0 done during QP creation (to prevent race condition).
+        if(i != 0) {
+            recv_enable_wr[i].comp_mask = 0;
+            recv_enable_wr[i].wr_id = i + 0x3000000;
+            recv_enable_wr[i].next = &enable_wr[i];
+            recv_enable_wr[i].sg_list = nullptr;
+            recv_enable_wr[i].num_sge = 0;
+            recv_enable_wr[i].exp_opcode = IBV_EXP_WR_RECV_ENABLE;
+            recv_enable_wr[i].exp_send_flags = 0;
+            recv_enable_wr[i].ex.imm_data = 0;
+            recv_enable_wr[i].task.wqe_enable.qp = qp.get_ptr();
+            recv_enable_wr[i].task.wqe_enable.wqe_count = i + 1;
+            recv_enable_wr[i].comp_mask = 0;
+        }
+
+        enable_wr[i].wr_id = i + 0x4000000;
         enable_wr[i].next = &wait_wr[i];
         enable_wr[i].sg_list = nullptr;
         enable_wr[i].num_sge = 0;
         enable_wr[i].exp_opcode = IBV_EXP_WR_SEND_ENABLE;
-        enable_wr[i].exp_send_flags = 0;  // IBV_EXP_SEND_WAIT_EN_LAST;
+        enable_wr[i].exp_send_flags = 0;  // IBV_SEND_SIGNALED;//0;
         enable_wr[i].ex.imm_data = 0;
         enable_wr[i].task.wqe_enable.qp = qp.get_ptr();
         enable_wr[i].task.wqe_enable.wqe_count = i + 1;
-        enable_wr[i].comp_mask = 0;
 
-        wait_wr[i].wr_id = 98;
-        wait_wr[i].next = (i < size - 1) ? &enable_wr[i + 1] : nullptr;
+        wait_wr[i].wr_id = i + 0x5000000;
+        wait_wr[i].next = (i < steps - 1) ? &recv_enable_wr[i + 1] : nullptr;
         wait_wr[i].sg_list = nullptr;
         wait_wr[i].num_sge = 0;
         wait_wr[i].exp_opcode = IBV_EXP_WR_CQE_WAIT;
         wait_wr[i].exp_send_flags = 0;
         wait_wr[i].ex.imm_data = 0;
         wait_wr[i].task.cqe_wait.cq = qp.rcq.cq.get();
-        wait_wr[i].task.cqe_wait.cq_count = i + 1;
+        wait_wr[i].task.cqe_wait.cq_count = 1;  // i + 1;
         wait_wr[i].comp_mask = 0;
     }
 
     tasks[0].item.qp = qp.get_ptr();
-    tasks[0].item.send_wr = &send_wr[0];
-    tasks[0].task_type = IBV_EXP_TASK_SEND;
+    tasks[0].item.recv_wr = &recv_wr[1];
+    tasks[0].task_type = IBV_EXP_TASK_RECV;
     tasks[0].next = &tasks[1];
     tasks[0].comp_mask = 0;
 
-    tasks[1].item.qp = mqp.get_ptr();
-    tasks[1].item.send_wr = &enable_wr[0];
+    tasks[1].item.qp = qp.get_ptr();
+    tasks[1].item.send_wr = &send_wr[0];
     tasks[1].task_type = IBV_EXP_TASK_SEND;
-    tasks[1].next = nullptr;
+    tasks[1].next = &tasks[2];
     tasks[1].comp_mask = 0;
+
+    tasks[2].item.qp = mqp.get_ptr();
+    tasks[2].item.send_wr = &enable_wr[0];
+    tasks[2].task_type = IBV_EXP_TASK_SEND;
+    tasks[2].next = nullptr;
+    tasks[2].comp_mask = 0;
 
     puts("About to post task");
     fflush(stdout);
+
+    //    tasks[current_task - 1].next = nullptr;
 
     auto t = get_time();
 
     ibv_exp_task *bad = nullptr;
     int ret = ibv_exp_post_task(verbs_resources.ib_ctx, &tasks[0], &bad);
     if(ret) {
-        printf("Post task failed with ret = %d, bad = %p, &tasks[0] = %p\n",
-               ret, bad, tasks);
+        printf("Post task failed with ret = %d, bad = tasks[%d]\n", ret,
+               (int)((size_t)bad - (size_t)tasks) / (int)sizeof(tasks[0]));
         fflush(stdout);
     }
-    puts("Posted Task");
+    // puts("Posted Task");
     fflush(stdout);
 
-    while(((volatile char *)buffer.get())[size * 2 - 1] == 0) {
+    while(((volatile char *)buffer.get())[buffer_size - 1] == 0) {
         // Do nothing.
     }
+
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for(1s);
 
     t = get_time() - t;
 
     puts("Transfer Complete");
     fflush(stdout);
 
-    printf("Time elapsed = %f ms (%f us per round)\n", 1e-6 * t,
-           1e-3 * t / size);
+    // printf("Time elapsed = %f ms (round trip time = %f us)\n", 1e-6 * t,
+    //        1e-3 * t / steps * 2);
+    // printf("Final values = %d, %d\n", buffer[buffer_size - chunk_size - 1],
+    //        buffer[buffer_size - 1]);
+    return 1e-3 * t / steps;
 }
 }

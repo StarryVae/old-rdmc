@@ -42,7 +42,7 @@ class message_types_exhausted : public exception {};
 class memory_region {
     std::unique_ptr<ibv_mr, std::function<void(ibv_mr*)>> mr;
     friend class queue_pair;
-    friend void ccc_test(uint32_t);
+    friend double ccc_test(uint32_t node_rank, int chunk_size);
 
 public:
     memory_region(char* buffer, size_t size);
@@ -150,7 +150,7 @@ std::map<uint32_t, remote_memory_region> verbs_exchange_memory_regions(
     const std::vector<uint32_t>& members, uint32_t node_rank,
     const memory_region& mr);
 }
-void ccc_test(uint32_t node_rank);
+double ccc_test(uint32_t node_rank, int chunk_size);
 }
 
 #endif /* VERBS_HELPER_H */

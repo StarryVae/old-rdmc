@@ -896,7 +896,21 @@ int main(int argc, char *argv[]) {
 
     printf("Experiment Name: %s\n", argv[1]);
     if(argc <= 1 || strcmp(argv[1], "custom") == 0) {
-        ccc_test(node_rank);
+        ccc_test(node_rank, 1 << 20);
+        ccc_test(node_rank, 1 << 20);
+        return 0;
+        // Warm up
+        // for(int i = 0; i < 16; i++)
+        // 	ccc_test(node_rank, 256);
+
+        // Run test
+        for(int size = 1024 * 1024; size > 1; size /= 2) {
+            printf("%d, ", size);
+            for(int i = 0; i < 16; i++)
+                printf("%f, ", ccc_test(node_rank, size));
+            printf("\n");
+            fflush(stdout);
+        }
         // for(int i = 0; i < 3; i++) {
         //     large_send();
         // }
