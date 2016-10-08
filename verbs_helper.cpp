@@ -10,10 +10,12 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <iostream>
+#include <mutex>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -43,9 +45,9 @@ struct cm_con_data_t {
 static map<uint32_t, tcp::socket> sockets;
 
 // listener to detect new incoming connections
-unique_ptr<tcp::connection_listener> connection_listener;
+static unique_ptr<tcp::connection_listener> connection_listener;
 
-config_t local_config;
+static config_t local_config;
 
 // structure of system resources
 struct ibv_resources {
@@ -56,6 +58,92 @@ struct ibv_resources {
     ibv_cq *cq;                   // CQ handle
     ibv_comp_channel *cc;         // Completion channel
 } verbs_resources;
+
+struct completion_handler_set {
+    completion_handler send;
+    completion_handler recv;
+    string name;
+};
+static vector<completion_handler_set> completion_handlers;
+static std::mutex completion_handlers_mutex;
+
+static atomic<bool> polling_loop_shutdown_flag;
+static void polling_loop() {
+    TRACE("Spawned main loop");
+
+    const int max_work_completions = 1024;
+    unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
+
+    while(true) {
+        int num_completions = 0;
+        while(num_completions == 0) {
+            if(polling_loop_shutdown_flag) return;
+            uint64_t poll_end = get_time() + 50000000;
+            while(num_completions == 0 && get_time() < poll_end) {
+                if(polling_loop_shutdown_flag) return;
+                num_completions =
+                    ibv_poll_cq(verbs_resources.cq, max_work_completions,
+                                work_completions.get());
+            }
+
+            if(num_completions == 0) {
+                if(ibv_req_notify_cq(verbs_resources.cq, 0))
+                    throw rdma::exception();
+
+                num_completions =
+                    ibv_poll_cq(verbs_resources.cq, max_work_completions,
+                                work_completions.get());
+
+                if(num_completions == 0) {
+                    pollfd file_descriptor;
+                    file_descriptor.fd = verbs_resources.cc->fd;
+                    file_descriptor.events = POLLIN;
+                    file_descriptor.revents = 0;
+                    int rc = 0;
+                    while(rc == 0 && !polling_loop_shutdown_flag) {
+                        if(polling_loop_shutdown_flag) return;
+                        rc = poll(&file_descriptor, 1, 50);
+                    }
+
+                    if(rc > 0) {
+                        ibv_cq *ev_cq;
+                        void *ev_ctx;
+                        ibv_get_cq_event(verbs_resources.cc, &ev_cq, &ev_ctx);
+                        ibv_ack_cq_events(ev_cq, 1);
+                    }
+                }
+            }
+        }
+
+        if(num_completions < 0) {  // Negative indicates an IBV error.
+            fprintf(stderr, "Failed to poll completion queue.");
+            continue;
+        }
+
+        std::lock_guard<std::mutex> l(completion_handlers_mutex);
+        for(int i = 0; i < num_completions; i++) {
+            ibv_wc &wc = work_completions[i];
+
+            message_type::tag_type type = wc.wr_id >> message_type::shift_bits;
+            uint64_t masked_wr_id = wc.wr_id & 0x00ffffffffffffff;
+            if(type >= completion_handlers.size()) {
+                // Unrecognized message type
+            } else if(wc.status != 0) {
+                // Failed operation
+            } else if(wc.opcode == IBV_WC_SEND) {
+                completion_handlers[type].send(masked_wr_id, wc.imm_data,
+                                               wc.byte_len);
+            } else if(wc.opcode == IBV_WC_RECV) {
+                completion_handlers[type].recv(masked_wr_id, wc.imm_data,
+                                               wc.byte_len);
+            } else if(wc.opcode == IBV_WC_RDMA_WRITE) {
+                // Do nothing
+            } else {
+                puts("Sent unrecognized completion type?!");
+            }
+        }
+    }
+}
 
 static int modify_qp_to_init(struct ibv_qp *qp, int ib_port) {
     struct ibv_qp_attr attr;
@@ -242,6 +330,11 @@ bool verbs_initialize(const map<uint32_t, string> &node_addresses,
     if(!res->cq) {
         fprintf(stderr, "failed to create CQ with %u entries\n", cq_size);
         goto resources_create_exit;
+    }
+
+    {
+        thread t(polling_loop);
+        t.detach();
     }
 
     TRACE("verbs_initialize() - SUCCESS");
@@ -465,8 +558,10 @@ queue_pair::queue_pair(size_t remote_index,
     if(!sock.exchange(0, tmp) || tmp != 0) throw rdma::qp_creation_failure();
 }
 bool queue_pair::post_send(const memory_region &mr, size_t offset,
-                           size_t length, uint64_t wr_id, uint32_t immediate) {
-    if(mr.size < offset + length) return false;
+                           size_t length, uint64_t wr_id, uint32_t immediate,
+                           const message_type &type) {
+    if(mr.size < offset + length || wr_id >> type.shift_bits || !type.tag)
+        throw invalid_args();
 
     ibv_send_wr sr;
     ibv_sge sge;
@@ -481,7 +576,7 @@ bool queue_pair::post_send(const memory_region &mr, size_t offset,
     // prepare the send work request
     memset(&sr, 0, sizeof(sr));
     sr.next = NULL;
-    sr.wr_id = wr_id;
+    sr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
     sr.imm_data = immediate;
     sr.sg_list = &sge;
     sr.num_sge = 1;
@@ -494,14 +589,18 @@ bool queue_pair::post_send(const memory_region &mr, size_t offset,
     }
     return true;
 }
-bool queue_pair::post_empty_send(uint64_t wr_id, uint32_t immediate) {
+bool queue_pair::post_empty_send(uint64_t wr_id, uint32_t immediate,
+                                 const message_type &type) {
+    if(wr_id >> type.shift_bits || !type.tag) throw invalid_args();
+
     ibv_send_wr sr;
     ibv_send_wr *bad_wr = NULL;
 
     // prepare the send work request
     memset(&sr, 0, sizeof(sr));
     sr.next = NULL;
-    sr.wr_id = wr_id;
+    sr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
+    ;
     sr.imm_data = immediate;
     sr.sg_list = NULL;
     sr.num_sge = 0;
@@ -516,8 +615,10 @@ bool queue_pair::post_empty_send(uint64_t wr_id, uint32_t immediate) {
 }
 
 bool queue_pair::post_recv(const memory_region &mr, size_t offset,
-                           size_t length, uint64_t wr_id) {
-    if(mr.size < offset + length) return false;
+                           size_t length, uint64_t wr_id,
+                           const message_type &type) {
+    if(mr.size < offset + length || wr_id >> type.shift_bits || !type.tag)
+        throw invalid_args();
 
     ibv_recv_wr rr;
     ibv_sge sge;
@@ -532,7 +633,8 @@ bool queue_pair::post_recv(const memory_region &mr, size_t offset,
     // prepare the receive work request
     memset(&rr, 0, sizeof(rr));
     rr.next = NULL;
-    rr.wr_id = wr_id;
+    rr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
+    ;
     rr.sg_list = &sge;
     rr.num_sge = 1;
 
@@ -543,14 +645,17 @@ bool queue_pair::post_recv(const memory_region &mr, size_t offset,
     }
     return true;
 }
-bool queue_pair::post_empty_recv(uint64_t wr_id) {
+bool queue_pair::post_empty_recv(uint64_t wr_id, const message_type &type) {
+    if(wr_id >> type.shift_bits || !type.tag) throw invalid_args();
+
     ibv_recv_wr rr;
     ibv_recv_wr *bad_wr;
 
     // prepare the receive work request
     memset(&rr, 0, sizeof(rr));
     rr.next = NULL;
-    rr.wr_id = wr_id;
+    rr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
+    ;
     rr.sg_list = NULL;
     rr.num_sge = 0;
 
@@ -600,6 +705,22 @@ bool queue_pair::post_write(const memory_region &mr, size_t offset,
         return false;
     }
     return true;
+}
+
+message_type::message_type(const string &name, completion_handler send_handler,
+                           completion_handler recv_handler) {
+    std::lock_guard<std::mutex> l(completion_handlers_mutex);
+
+    if(completion_handlers.size() > std::numeric_limits<tag_type>::max())
+        throw message_types_exhausted();
+
+    tag = completion_handlers.size();
+
+    completion_handler_set set;
+    set.send = send_handler;
+    set.recv = recv_handler;
+    set.name = name;
+    completion_handlers.push_back(set);
 }
 
 // int poll_for_completions(int num, ibv_wc *wcs, atomic<bool> &shutdown_flag) {

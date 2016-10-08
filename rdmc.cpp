@@ -55,145 +55,6 @@ atomic<bool> shutdown_flag;
 map<uint16_t, shared_ptr<group> > groups;
 mutex groups_lock;
 
-static void main_loop() {
-    TRACE("Spawned main loop");
-
-    const int max_work_completions = 1024;
-    unique_ptr<ibv_wc[]> work_completions(new ibv_wc[max_work_completions]);
-
-    ibv_cq* completion_queue = ::rdma::impl::verbs_get_cq();
-    ibv_comp_channel* completion_channel =
-        ::rdma::impl::verbs_get_completion_channel();
-
-    while(true) {
-        int num_completions = 0;
-        while(!shutdown_flag && num_completions == 0) {
-            uint64_t poll_end = get_time() + 50000000;
-            while(!shutdown_flag && num_completions == 0 &&
-                  get_time() < poll_end) {
-                num_completions =
-                    ibv_poll_cq(completion_queue, max_work_completions,
-                                work_completions.get());
-            }
-
-            if(num_completions == 0) {
-                if(ibv_req_notify_cq(completion_queue, 0))
-                    throw rdma::exception();
-
-                num_completions =
-                    ibv_poll_cq(completion_queue, max_work_completions,
-                                work_completions.get());
-
-                if(num_completions == 0) {
-                    pollfd file_descriptor;
-                    file_descriptor.fd = completion_channel->fd;
-                    file_descriptor.events = POLLIN;
-                    file_descriptor.revents = 0;
-                    int rc = 0;
-                    while(rc == 0 && !shutdown_flag) {
-                        rc = poll(&file_descriptor, 1, 50);
-                    }
-
-                    if(rc > 0) {
-                        ibv_cq* ev_cq;
-                        void* ev_ctx;
-                        ibv_get_cq_event(completion_channel, &ev_cq, &ev_ctx);
-                        ibv_ack_cq_events(ev_cq, 1);
-                    }
-                }
-            }
-        }
-
-        if(shutdown_flag) {
-            groups.clear();
-            ::rdma::impl::verbs_destroy();
-            return;
-        }
-
-        if(num_completions < 0) {  // Negative indicates an IBV error.
-            fprintf(stderr, "ERROR: Failed to poll completion queue.");
-            continue;
-        }
-
-        for(int i = 0; i < num_completions; i++) {
-            ibv_wc& wc = work_completions[i];
-            auto tag = parse_tag(wc.wr_id);
-
-            if(wc.status != 0) {
-                printf("wc.status = %d; wc.wr_id = 0x%llx; imm = 0x%x\n",
-                       (int)wc.status, (long long)wc.wr_id,
-                       (unsigned int)wc.imm_data);
-                fflush(stdout);
-            } else if(wc.opcode == IBV_WC_SEND) {
-                if(tag.message_type == MessageType::DATA_BLOCK) {
-                    shared_ptr<group> g;
-
-                    {
-                        unique_lock<mutex> lock(groups_lock);
-                        auto it = groups.find(tag.group_number);
-                        if(it == groups.end()) {
-                            fprintf(stderr,
-                                    "ERROR: Sent data block didn't belong to "
-                                    "any group?!");
-                            continue;
-                        }
-                        g = it->second;
-                    }
-
-                    g->complete_block_send();
-                } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
-                    // Do nothing
-                } else {
-                    printf(
-                        "sent unrecognized message type?! (message_type=%d)\n",
-                        (int)tag.message_type);
-                }
-            } else if(wc.opcode == IBV_WC_RECV) {
-                if(tag.message_type == MessageType::DATA_BLOCK) {
-                    assert(wc.wc_flags & IBV_WC_WITH_IMM);
-                    shared_ptr<group> g;
-                    {
-                        unique_lock<mutex> lock(groups_lock);
-                        auto it = groups.find(tag.group_number);
-                        if(it == groups.end()) {
-                            fprintf(stderr,
-                                    "ERROR: Received data block didn't belong "
-                                    "to any group?!");
-                            continue;
-                        }
-                        g = it->second;
-                    }
-
-                    g->receive_block(wc.imm_data, wc.byte_len);
-                } else if(tag.message_type == MessageType::READY_FOR_BLOCK) {
-                    shared_ptr<group> g;
-
-                    {
-                        unique_lock<mutex> lock(groups_lock);
-                        auto it = groups.find(tag.group_number);
-                        if(it != groups.end()) g = it->second;
-                        // else
-                        //     TRACE("Got RFB for group not yet created...");
-                    }
-
-                    if(g) {
-                        g->receive_ready_for_block(wc.imm_data, tag.target);
-                    }
-                } else {
-                    printf(
-                        "received message with unrecognized type, even though "
-                        "we posted the buffer?! (message_type=%d)\n",
-                        (int)tag.message_type);
-                }
-            } else if(wc.opcode == IBV_WC_RDMA_WRITE) {
-                // Do nothing
-            } else {
-                puts("Sent unrecognized completion type?!");
-            }
-        }
-    }
-}
-
 bool initialize(const map<uint32_t, string>& addresses, uint32_t _node_rank) {
     if(shutdown_flag) return false;
 
@@ -205,8 +66,36 @@ bool initialize(const map<uint32_t, string>& addresses, uint32_t _node_rank) {
     }
     TRACE("verbs initialized");
 
-    thread t(main_loop);
-    t.detach();
+    auto find_group = [](uint16_t group_number) {
+        unique_lock<mutex> lock(groups_lock);
+        auto it = groups.find(group_number);
+        return it != groups.end() ? it->second : nullptr;
+    };
+    auto send_data_block = [find_group](uint64_t tag, uint32_t immediate,
+                                        size_t length) {
+        ParsedTag parsed_tag = parse_tag(tag);
+        shared_ptr<group> g = find_group(parsed_tag.group_number);
+        if(g) g->complete_block_send();
+    };
+    auto receive_data_block = [find_group](uint64_t tag, uint32_t immediate,
+                                           size_t length) {
+        ParsedTag parsed_tag = parse_tag(tag);
+        shared_ptr<group> g = find_group(parsed_tag.group_number);
+        if(g) g->receive_block(immediate, length);
+    };
+    auto send_ready_for_block = [](uint64_t, uint32_t, size_t) {};
+    auto receive_ready_for_block = [find_group](
+        uint64_t tag, uint32_t immediate, size_t length) {
+        ParsedTag parsed_tag = parse_tag(tag);
+        shared_ptr<group> g = find_group(parsed_tag.group_number);
+        if(g) g->receive_ready_for_block(immediate, parsed_tag.target);
+    };
+
+    group::message_types.data_block =
+        message_type("rdmc.data_block", send_data_block, receive_data_block);
+    group::message_types.ready_for_block = message_type(
+        "rdmc.ready_for_block", send_ready_for_block, receive_ready_for_block);
+
     return true;
 }
 void add_address(uint32_t index, const string& address) {
@@ -327,8 +216,7 @@ void barrier_group::barrier_wait() {
     for(unsigned int m = 0; m < total_steps; m++) {
         if(!queue_pairs[m].post_write(
                *number_mr.get(), 0, 8,
-               form_tag(0, (node_rank + (1 << m)) % group_size,
-                        MessageType::BARRIER),
+               form_tag(0, (node_rank + (1 << m)) % group_size),
                remote_memory_regions[m], m * 8, false, true)) {
             throw rdmc::connection_broken();
         }

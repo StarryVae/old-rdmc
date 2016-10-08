@@ -5,28 +5,19 @@
 #include <cstdint>
 #include <utility>
 
-enum class MessageType : uint8_t {
-    DATA_BLOCK = 0x01,
-    SMALL_MESSAGE = 0x02,
-    READY_FOR_BLOCK = 0x03,
-    BARRIER = 0x04,
-};
-
 struct ParsedTag {
-    MessageType message_type;
+    uint8_t reserved;
+    uint8_t padding;
     uint16_t group_number;
     uint32_t target;
 };
 
 inline ParsedTag parse_tag(uint64_t t) {
-    return ParsedTag{(MessageType)((t & 0x00ff000000000000ull) >> 48),
-                     (uint16_t)((t & 0x0000ffff00000000ull) >> 32),
+    return ParsedTag{0, 0, (uint16_t)((t & 0x0000ffff00000000ull) >> 32),
                      (uint32_t)(t & 0x00000000ffffffffull)};
 }
-inline uint64_t form_tag(uint16_t group_number, uint32_t target,
-                         MessageType message_type) {
-    return (((uint64_t)message_type) << 48) | (((uint64_t)group_number) << 32) |
-           (uint64_t)target;
+inline uint64_t form_tag(uint16_t group_number, uint32_t target) {
+    return (((uint64_t)group_number) << 32) | (uint64_t)target;
 }
 
 struct ParsedImmediate {

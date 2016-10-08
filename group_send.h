@@ -80,6 +80,11 @@ protected:
     void connect(size_t neighbor);
 
 public:
+    static struct {
+        rdma::message_type data_block;
+        rdma::message_type ready_for_block;
+    } message_types;
+
     group(uint16_t group_number, size_t block_size, vector<uint32_t> members,
           uint32_t member_index, incoming_message_callback_t upcall,
           completion_callback_t callback);

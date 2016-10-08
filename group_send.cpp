@@ -11,6 +11,8 @@ using namespace std;
 using namespace rdma;
 using namespace rdmc;
 
+decltype(group::message_types) group::message_types;
+
 group::group(uint16_t _group_number, size_t _block_size,
              vector<uint32_t> _members, uint32_t _member_index,
              incoming_message_callback_t upcall, completion_callback_t callback)
@@ -178,8 +180,8 @@ void group::receive_ready_for_block(uint32_t step, uint32_t sender) {
 
     auto it = rfb_queue_pairs.find(sender);
     assert(it != rfb_queue_pairs.end());
-    it->second.post_empty_recv(
-        form_tag(group_number, sender, MessageType::READY_FOR_BLOCK));
+    it->second.post_empty_recv(form_tag(group_number, sender),
+                               message_types.ready_for_block);
 
     receivers_ready.insert(sender);
 
@@ -285,17 +287,17 @@ void group::send_next_block() {
     assert(it != queue_pairs.end());
 
     if(first_block_number && block_number == *first_block_number) {
-        assert(it->second.post_send(
-            *first_block_mr, 0, block_size,
-            form_tag(group_number, target, MessageType::DATA_BLOCK),
-            form_immediate(num_blocks, block_number)));
+        CHECK(it->second.post_send(*first_block_mr, 0, block_size,
+                                   form_tag(group_number, target),
+                                   form_immediate(num_blocks, block_number),
+                                   message_types.data_block));
     } else {
         size_t offset = block_number * block_size;
         size_t nbytes = min(block_size, message_size - offset);
-        assert(it->second.post_send(
-            *mr, mr_offset + offset, nbytes,
-            form_tag(group_number, target, MessageType::DATA_BLOCK),
-            form_immediate(num_blocks, block_number)));
+        CHECK(it->second.post_send(*mr, mr_offset + offset, nbytes,
+                                   form_tag(group_number, target),
+                                   form_immediate(num_blocks, block_number),
+                                   message_types.data_block));
     }
     outgoing_block = block_number;
     LOG_EVENT(group_number, message_number, block_number,
@@ -364,20 +366,17 @@ void group::post_recv(block_transfer transfer) {
     // fflush(stdout);
 
     if(first_block_number && transfer.block_number == *first_block_number) {
-        bool ret = it->second.post_recv(
-            *first_block_mr, 0, block_size,
-            form_tag(group_number, transfer.target, MessageType::DATA_BLOCK));
-        assert(ret);
+        CHECK(it->second.post_recv(*first_block_mr, 0, block_size,
+                                   form_tag(group_number, transfer.target),
+                                   message_types.data_block));
     } else {
         size_t offset = block_size * transfer.block_number;
         size_t length = min(block_size, (size_t)(message_size - offset));
 
         if(length > 0) {
-            bool ret =
-                it->second.post_recv(*mr, mr_offset + offset, length,
-                                     form_tag(group_number, transfer.target,
-                                              MessageType::DATA_BLOCK));
-            assert(ret);
+            CHECK(it->second.post_recv(*mr, mr_offset + offset, length,
+                                       form_tag(group_number, transfer.target),
+                                       message_types.data_block));
         }
     }
     LOG_EVENT(group_number, message_number, transfer.block_number,
@@ -387,8 +386,8 @@ void group::connect(size_t neighbor) {
     queue_pairs.emplace(neighbor, queue_pair(members[neighbor]));
 
     auto post_recv = [this, neighbor](rdma::queue_pair* qp) {
-        qp->post_empty_recv(
-            form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK));
+        qp->post_empty_recv(form_tag(group_number, neighbor),
+                            message_types.ready_for_block);
     };
 
     rfb_queue_pairs.emplace(neighbor, queue_pair(members[neighbor], post_recv));
@@ -397,8 +396,8 @@ void group::connect(size_t neighbor) {
 void group::send_ready_for_block(uint32_t neighbor) {
     auto it = rfb_queue_pairs.find(neighbor);
     assert(it != rfb_queue_pairs.end());
-    it->second.post_empty_send(
-        form_tag(group_number, neighbor, MessageType::READY_FOR_BLOCK), 0);
+    it->second.post_empty_send(form_tag(group_number, neighbor), 0,
+                               message_types.ready_for_block);
 }
 
 void chain_group::form_connections() {

@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <experimental/optional>
 #include <map>
 #include <memory>
 #include <string>
@@ -28,6 +29,7 @@ class connection_broken : public exception {};
 class creation_failure : public exception {};
 class mr_creation_failure : public creation_failure {};
 class qp_creation_failure : public creation_failure {};
+class message_types_exhausted : public exception {};
 
 /**
  * A C++ wrapper for the IB Verbs ibv_mr struct. Registers a memory region for
@@ -58,6 +60,24 @@ public:
     const uint32_t rkey;
 };
 
+typedef std::function<void(uint64_t tag, uint32_t immediate, size_t length)>
+    completion_handler;
+
+class message_type {
+public:
+    typedef uint8_t tag_type;
+    static constexpr unsigned int shift_bits = 64 - 8 * sizeof(tag_type);
+
+private:
+    std::experimental::optional<tag_type> tag;
+    friend class queue_pair;
+
+public:
+    message_type(const std::string& name, completion_handler send_handler,
+                 completion_handler recv_handler);
+    message_type() {}
+};
+
 /**
  * A C++ wrapper for the IB Verbs ibv_qp struct and its associated functions.
  * Instances of this class can only be created after global Verbs initialization
@@ -73,12 +93,14 @@ public:
                std::function<void(queue_pair*)> post_recvs);
     queue_pair(queue_pair&&) = default;
     bool post_send(const memory_region& mr, size_t offset, size_t length,
-                   uint64_t wr_id, uint32_t immediate);
+                   uint64_t wr_id, uint32_t immediate,
+                   const message_type& type);
     bool post_recv(const memory_region& mr, size_t offset, size_t length,
-                   uint64_t wr_id);
+                   uint64_t wr_id, const message_type& type);
 
-    bool post_empty_send(uint64_t wr_id, uint32_t immediate);
-    bool post_empty_recv(uint64_t wr_id);
+    bool post_empty_send(uint64_t wr_id, uint32_t immediate,
+                         const message_type& type);
+    bool post_empty_recv(uint64_t wr_id, const message_type& type);
 
     bool post_write(const memory_region& mr, size_t offset, size_t length,
                     uint64_t wr_id, remote_memory_region remote_mr,
