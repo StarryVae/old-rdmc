@@ -600,7 +600,6 @@ bool queue_pair::post_empty_send(uint64_t wr_id, uint32_t immediate,
     memset(&sr, 0, sizeof(sr));
     sr.next = NULL;
     sr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
-    ;
     sr.imm_data = immediate;
     sr.sg_list = NULL;
     sr.num_sge = 0;
@@ -634,7 +633,6 @@ bool queue_pair::post_recv(const memory_region &mr, size_t offset,
     memset(&rr, 0, sizeof(rr));
     rr.next = NULL;
     rr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
-    ;
     rr.sg_list = &sge;
     rr.num_sge = 1;
 
@@ -655,7 +653,6 @@ bool queue_pair::post_empty_recv(uint64_t wr_id, const message_type &type) {
     memset(&rr, 0, sizeof(rr));
     rr.next = NULL;
     rr.wr_id = wr_id | ((uint64_t)*type.tag << type.shift_bits);
-    ;
     rr.sg_list = NULL;
     rr.num_sge = 0;
 

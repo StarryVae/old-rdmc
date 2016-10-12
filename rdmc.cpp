@@ -33,19 +33,8 @@
 #include <unistd.h>
 #include <vector>
 
-extern "C" {
-#include <infiniband/verbs.h>
-}
-
 using namespace std;
 using namespace rdma;
-
-namespace rdma {
-namespace impl {
-extern ibv_cq* verbs_get_cq();
-extern ibv_comp_channel* verbs_get_completion_channel();
-}
-}
 
 namespace rdmc {
 uint32_t node_rank;
