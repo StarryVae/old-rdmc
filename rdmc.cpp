@@ -19,6 +19,7 @@
 #include <iostream>
 #include <list>
 #include <map>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <queue>

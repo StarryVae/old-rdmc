@@ -7,6 +7,7 @@
 #include "util.h"
 #include "verbs_helper.h"
 
+#include <cmath>
 #include <boost/optional.hpp>
 #include <map>
 #include <memory>

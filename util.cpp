@@ -2,6 +2,9 @@
 #include "util.h"
 #include "verbs_helper.h"
 
+#include <cmath>
+#include <numeric>
+#include <algorithm>
 #include <cassert>
 #include <cinttypes>
 #include <cstdint>
